@@ -157,11 +157,29 @@ in
 copyFarm name
   [
     {
-      name = "pipewire-0.1.0-lH35HnBDBgBw4baPCOGqqR67dG7iS19gQnq52dzoCsGX";
+      name = "pipewire-0.1.0-lH35HuFFBgA9DkhfEJ2jerWTf6-XpUfGG4rxqixgynuC";
       path = fetchZigArtifact {
         name = "pipewire";
-        url = "git+https://git.jcollie.dev/jeff/zig-pipewire.git?ref=main#8a19c3ed38863ec8322a41bda1684763024ba2a6";
-        hash = "sha256-QmGe6Jcc+AfftofnKaZGPlZmNgUJoy9ozJAsKzCvOfE=";
+        url = "git+https://git.jcollie.dev/jeff/zig-pipewire.git?ref=main#9f660901bea24bf19cec66b14610405886954305";
+        hash = "sha256-QOzbaViv6S+5kqynDgo1T1gm3sE8KOtnzKRLEQFrgTY=";
+        unpack = true;
+      };
+    }
+    {
+      name = "riff-0.2.0-HAfI3ofnAAD-g1Dg6cf4Z_H6fTdKKgCCj3wyGZaFqyzd";
+      path = fetchZigArtifact {
+        name = "riff";
+        url = "git+https://git.jcollie.dev/jeff/zig-riff.git#f91bc143ef444454e28cc119a633187929b02f5b";
+        hash = "sha256-Gh1DDvIEWNpPZZUwTNX8fw9+PeE2G3s7LgDNNm+Ck8s=";
+        unpack = true;
+      };
+    }
+    {
+      name = "wav-0.0.0-w1RoIDwtAgCLuAJCuYfOA3DCEUdts5QwG4BgnuDJUBqi";
+      path = fetchZigArtifact {
+        name = "wav";
+        url = "git+https://git.jcollie.dev/jeff/zig-wav.git#47978b799384f27e469358e7ae3776f4b9882978";
+        hash = "sha256-tCDnG4I8VMK2ordOFSVKah035HCoih7UxnIo3niNstY=";
         unpack = true;
       };
     }

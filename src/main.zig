@@ -26,6 +26,7 @@ const Allocator = std.mem.Allocator;
 
 const wopr = @import("wopr");
 const play = @import("play");
+const wav = @import("wav");
 
 const version = "0.0.0";
 
@@ -48,7 +49,8 @@ const usage =
     \\  -r, --rate HZ         sample rate (default 44100); when playing, the
     \\                        graph has the last word and says what it chose
     \\  -c, --channels N      1 or 2 (default 2)
-    \\  -f, --format FMT      s16, s24 or f32 (default s16); written files only
+    \\  -f, --format FMT      u8, s16, s24, s32, f32 or f64 (default s16);
+    \\                        written files only
     \\      --raw             headerless PCM rather than a WAVE stream
     \\  -g, --gain DB         output level in dBFS RMS (default -18)
     \\  -w, --width W         stereo spread, 0 to 1 (default 0.6)
@@ -246,7 +248,10 @@ fn playHum(
 }
 
 fn stream(out: *Io.Writer, hum: *wopr.Hum, config: Config, total_frames: ?u64) !void {
-    if (!config.raw) try wopr.wav.writeHeader(out, .{
+    // `--raw` skips the container entirely rather than writing a header and
+    // hoping nobody reads it, so the two paths differ by whether there is a
+    // `wav.Writer` at all.
+    var file: ?wav.Writer = if (config.raw) null else try .init(out, .{
         .sample_rate = config.rate,
         .channels = config.channels,
         .format = config.format,
@@ -266,9 +271,14 @@ fn stream(out: *Io.Writer, hum: *wopr.Hum, config: Config, total_frames: ?u64) !
         }
         const samples = block[0 .. frames * config.channels];
         hum.render(samples);
-        try wopr.wav.writeSamples(out, config.format, samples);
+        if (file) |*w| try w.write(f32, samples) else try wav.writeSamples(out, f32, config.format, samples);
         rendered += frames;
     }
+
+    // The pad byte a `data` chunk of odd length needs. Only eight bit audio
+    // and 24 bit mono can land on one, so it is exactly the kind of thing
+    // that is wrong in one file in a thousand if it is left out.
+    if (file) |*w| try w.finish();
     try out.flush();
 }
 
@@ -289,7 +299,7 @@ const Config = struct {
     duration_seconds: ?f64 = null,
     rate: u32 = defaults.sample_rate,
     channels: u8 = defaults.channels,
-    format: wopr.wav.Format = .s16,
+    format: wav.Format = .s16,
     raw: bool = false,
     gain_db: f64 = defaults.level_dbfs,
     width: f64 = defaults.width,
@@ -322,7 +332,7 @@ fn describe(err: ParseError) []const u8 {
         error.UnexpectedArgument => "unexpected argument; wopr takes options only",
         error.MissingValue => "an option is missing its value",
         error.BadNumber => "that is not a number",
-        error.BadFormat => "format must be s16, s24 or f32",
+        error.BadFormat => "format must be u8, s16, s24, s32, f32 or f64",
         error.BadChannelCount => "channels must be 1 or 2",
         error.BadRate => "rate must be between 8000 and 768000 Hz",
         error.BadDuration => "duration must be a positive number of seconds",
@@ -402,7 +412,7 @@ fn parse(args: []const []const u8) ParseError!Config {
             config.channels = n;
         } else if (is(name, "-f", "--format")) {
             const v = try Value.next(inline_value, args, &i);
-            config.format = std.meta.stringToEnum(wopr.wav.Format, v) orelse return error.BadFormat;
+            config.format = std.meta.stringToEnum(wav.Format, v) orelse return error.BadFormat;
         } else if (is(name, "-g", "--gain")) {
             const v = try Value.next(inline_value, args, &i);
             const db = std.fmt.parseFloat(f64, v) catch return error.BadNumber;
@@ -454,7 +464,7 @@ test "the defaults are a stereo 16 bit WAVE stream that never ends" {
     try testing.expectEqual(@as(?f64, null), config.duration_seconds);
     try testing.expectEqual(@as(u32, 44_100), config.rate);
     try testing.expectEqual(@as(u8, 2), config.channels);
-    try testing.expectEqual(wopr.wav.Format.s16, config.format);
+    try testing.expectEqual(wav.Format.s16, config.format);
     try testing.expect(!config.raw);
 }
 
@@ -477,8 +487,8 @@ test "long options take their value either way round" {
     const joined = try parse(&.{ "--rate=48000", "--format=f32" });
     try testing.expectEqual(@as(u32, 48_000), spaced.rate);
     try testing.expectEqual(@as(u32, 48_000), joined.rate);
-    try testing.expectEqual(wopr.wav.Format.f32, spaced.format);
-    try testing.expectEqual(wopr.wav.Format.f32, joined.format);
+    try testing.expectEqual(wav.Format.f32, spaced.format);
+    try testing.expectEqual(wav.Format.f32, joined.format);
 }
 
 test "short options and their long spellings agree" {
@@ -508,6 +518,15 @@ test "the bursts can be thinned out or switched off" {
     try testing.expectEqual(@as(?f64, 0), (try parse(&.{ "--bursts", "off" })).bursts_per_minute);
     try testing.expectError(error.BadBurstRate, parse(&.{ "--bursts", "-4" }));
     try testing.expectError(error.BadNumber, parse(&.{ "--bursts", "lots" }));
+}
+
+test "every width the library writes can be asked for" {
+    // Six now rather than three: the widths come from zig-wav rather than
+    // from a table here, so there is no reason to offer fewer than it has.
+    inline for (@typeInfo(wav.Format).@"enum".fields) |field| {
+        const config = try parse(&.{ "--format", field.name });
+        try testing.expectEqual(@field(wav.Format, field.name), config.format);
+    }
 }
 
 test "a seed may be given in hexadecimal" {
@@ -546,6 +565,7 @@ test "bad input is refused rather than rounded into range" {
     try testing.expectError(error.BadRate, parse(&.{ "--rate", "4000" }));
     try testing.expectError(error.BadChannelCount, parse(&.{ "--channels", "6" }));
     try testing.expectError(error.BadFormat, parse(&.{ "--format", "mp3" }));
+    try testing.expectError(error.BadFormat, parse(&.{ "--format", "s12" }));
     try testing.expectError(error.BadDuration, parse(&.{ "--duration", "0" }));
     try testing.expectError(error.BadDuration, parse(&.{ "--duration", "-3" }));
     try testing.expectError(error.BadDuration, parse(&.{ "--duration", "nan" }));

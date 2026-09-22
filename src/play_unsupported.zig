@@ -28,7 +28,8 @@ pub const Options = struct {
     environ: ?std.process.Environ = null,
 };
 
-/// The same shape as the real module's, plus the one that always happens.
+/// The same shape as the real module's, minus what `pw.StreamError` adds
+/// and plus the one thing that always happens here.
 pub const Error = wopr.Hum.InitError || error{
     NotStreaming,
     /// This build has no way to reach an audio device.

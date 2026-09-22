@@ -1,0 +1,10 @@
+version = 1
+SPDX-PackageName = "zig-pipewire"
+SPDX-PackageSupplier = "Jeffrey C. Ollie <jeff@ocjtech.us>"
+SPDX-PackageDownloadLocation = "https://git.jcollie.dev/jeff/zig-pipewire.git"
+
+[[annotations]]
+path = "flake.lock"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© 2026 Jeffrey C. Ollie <jeff@ocjtech.us>"
+SPDX-License-Identifier = "MIT"

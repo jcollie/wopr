@@ -1,0 +1,21 @@
+// SPDX-FileCopyrightText: © 2026 Jeffrey C. Ollie <jeff@ocjtech.us>
+// SPDX-License-Identifier: MIT
+
+.{
+    .name = .pipewire,
+    .version = "0.1.0",
+    .fingerprint = 0x1c93541a1ef97d94, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "examples",
+        "tests",
+        "tools",
+        "LICENSES",
+        "REUSE.toml",
+        "README.md",
+    },
+}

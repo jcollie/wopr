@@ -8,9 +8,13 @@
         // PipeWire is a Linux daemon and the library speaks to it with Linux
         // syscalls; `src/play_unsupported.zig` stands in elsewhere.
         .pipewire = .{
-            .url = "git+https://git.jcollie.dev/jeff/zig-pipewire.git?ref=main#8a19c3ed38863ec8322a41bda1684763024ba2a6",
-            .hash = "pipewire-0.1.0-lH35HnBDBgBw4baPCOGqqR67dG7iS19gQnq52dzoCsGX",
+            .url = "git+https://git.jcollie.dev/jeff/zig-pipewire.git?ref=main#9f660901bea24bf19cec66b14610405886954305",
+            .hash = "pipewire-0.1.0-lH35HuFFBgA9DkhfEJ2jerWTf6-XpUfGG4rxqixgynuC",
             .lazy = true,
+        },
+        .wav = .{
+            .url = "git+https://git.jcollie.dev/jeff/zig-wav.git#47978b799384f27e469358e7ae3776f4b9882978",
+            .hash = "wav-0.0.0-w1RoIDwtAgCLuAJCuYfOA3DCEUdts5QwG4BgnuDJUBqi",
         },
     },
     .paths = .{

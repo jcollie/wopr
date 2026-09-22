@@ -218,7 +218,7 @@ $ nix run . -- --duration 30 --output hum.wav
 $ nix develop -c zig build -Doptimize=ReleaseFast
 ```
 
-The Zig dependency is vendored for Nix by
+The Zig dependencies are vendored for Nix by
 [zon2nix](https://git.jcollie.dev/jeff/zon2nix) into `build.zig.zon.nix`,
 which is committed. Adding, removing or updating one is the whole of
 regenerating it:
@@ -257,7 +257,7 @@ as fast as they can be made, which is what you want when rendering.
 | `-d, --duration SECS` | stop after this long; the default is never |
 | `-r, --rate HZ` | sample rate, 8000 to 768000 (default 44100) |
 | `-c, --channels N` | 1 or 2 (default 2) |
-| `-f, --format FMT` | `s16`, `s24` or `f32` (default `s16`); written files only |
+| `-f, --format FMT` | `u8`, `s16`, `s24`, `s32`, `f32` or `f64` (default `s16`); written files only |
 | `--raw` | headerless PCM rather than a WAVE stream |
 | `-g, --gain DB` | output level in dBFS RMS (default −18) |
 | `-w, --width W` | stereo spread, 0 to 1 (default 0.6) |
@@ -265,10 +265,16 @@ as fast as they can be made, which is what you want when rendering.
 | `-b, --bursts N` | pings and pongs a minute (default 70), or `off` |
 | `-s, --seed N` | seed the randomness; the default comes from the clock |
 
-An endless WAVE stream declares its length as `0xFFFFFFFF`, which is the
-convention for one: a player reads until the pipe closes rather than stopping
-at a length that was a guess. Give `--duration` and the header carries the
-real length, because then there is one.
+### Writing
+
+The files come from [zig-wav](https://git.jcollie.dev/jeff/zig-wav), which
+is where the six widths come from too. An endless stream declares its length
+as `0xFFFFFFFF`, the convention for one: a player reads until the pipe closes
+rather than stopping at a length that was a guess. Give `--duration` and the
+header carries the real length, because then there is one.
+
+`--raw` skips the container rather than writing a header nobody should read,
+so the two paths differ by whether there is a `wav.Writer` at all.
 
 ### Playing
 
@@ -323,6 +329,12 @@ defer hum.deinit(gpa);
 var frames: [2048]f32 = undefined; // interleaved, 1024 stereo frames
 hum.render(&frames);
 ```
+
+The module depends on nothing but the standard library. Putting the samples
+somewhere is deliberately somebody else's job — the `wopr` program writes
+WAVE files with [zig-wav](https://git.jcollie.dev/jeff/zig-wav) and plays
+them with [zig-pipewire](https://git.jcollie.dev/jeff/zig-pipewire), and
+neither is reachable from the library.
 
 `Hum.Options` exposes every number the model has: the partial table itself,
 the drift and shimmer depths and their time constants, the shape and level

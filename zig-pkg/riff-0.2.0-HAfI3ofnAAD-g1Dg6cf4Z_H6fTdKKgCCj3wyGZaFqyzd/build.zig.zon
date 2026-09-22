@@ -1,0 +1,16 @@
+.{
+    .name = .riff,
+    .version = "0.2.0",
+    .fingerprint = 0x30024fe8dec8071c, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "tools",
+        "LICENSES",
+        "REUSE.toml",
+        "README.md",
+    },
+}

@@ -7,11 +7,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // One module: the synthesiser, the partial table it is built from, and
-    // the little bit of RIFF/WAVE needed to hand samples to a player. They
-    // are one module because they are one idea and total a few hundred
-    // lines; Zig only analyses what is referenced, so a program that renders
-    // into its own audio callback never compiles the WAVE header writer.
+    // One module: the synthesiser and the measured tables it is built from.
+    // It depends on nothing but the standard library, on purpose -- a
+    // program that renders a hum into its own audio callback should not
+    // acquire a WAVE writer or a PipeWire client by linking one. Both of
+    // those belong to the command line below.
     const mod = b.addModule("wopr", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -37,6 +37,10 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    // Writing the files. Not lazy and not conditional: a WAVE file is the
+    // same on every target.
+    const wav = b.dependency("wav", .{ .target = target, .optimize = optimize });
+
     const exe = b.addExecutable(.{
         .name = "wopr",
         .root_module = b.createModule(.{
@@ -46,6 +50,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "wopr", .module = mod },
                 .{ .name = "play", .module = play },
+                .{ .name = "wav", .module = wav.module("wav") },
             },
         }),
     });

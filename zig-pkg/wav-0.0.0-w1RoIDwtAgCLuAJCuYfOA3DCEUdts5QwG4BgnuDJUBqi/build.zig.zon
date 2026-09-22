@@ -1,0 +1,26 @@
+// SPDX-FileCopyrightText: © 2026 Jeffrey C. Ollie <jeff@ocjtech.us>
+//
+// SPDX-License-Identifier: MIT
+
+.{
+    .name = .wav,
+    .version = "0.0.0",
+    .fingerprint = 0x6b7f2928206854c3, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .riff = .{
+            .url = "git+https://git.jcollie.dev/jeff/zig-riff.git#f91bc143ef444454e28cc119a633187929b02f5b",
+            .hash = "riff-0.2.0-HAfI3ofnAAD-g1Dg6cf4Z_H6fTdKKgCCj3wyGZaFqyzd",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "tests",
+        "tools",
+        "LICENSES",
+        "REUSE.toml",
+        "README.md",
+    },
+}

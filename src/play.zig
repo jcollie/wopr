@@ -42,14 +42,9 @@ pub const Options = struct {
     environ: ?std.process.Environ = null,
 };
 
-/// What this adds to whatever `pw.Stream` and `Hum.init` can fail with.
-///
-/// The functions below leave their error sets to be inferred rather than
-/// naming the union, because `zig-pipewire` does not re-export the stream's
-/// error set from its root -- `pw.Stream.open` returns it, and a caller
-/// cannot write it down. The stand-in names its set for the same reason in
-/// reverse: it has no `pw` to union with.
-pub const Error = wopr.Hum.InitError || error{
+/// Everything a `Player` can fail with: reaching the daemon and negotiating
+/// with it, and building the synthesiser once it has answered.
+pub const Error = pw.StreamError || wopr.Hum.InitError || error{
     /// The daemon answered but the graph never started the stream.
     NotStreaming,
 };
@@ -67,7 +62,7 @@ pub const Player = struct {
     /// whatever `rate()` reports. Building it first and resampling would put
     /// a resampler in the way of a synthesiser that can simply be asked for
     /// the other rate.
-    pub fn open(gpa: Allocator, hum_options: wopr.Hum.Options, options: Options) !Player {
+    pub fn open(gpa: Allocator, hum_options: wopr.Hum.Options, options: Options) Error!Player {
         const stream = try pw.Stream.open(gpa, .{
             .name = options.name,
             .media_name = "machine room hum",
@@ -108,7 +103,7 @@ pub const Player = struct {
     }
 
     /// Render until `seconds` have played, or forever when it is `null`.
-    pub fn run(p: *Player, seconds: ?f64) !void {
+    pub fn run(p: *Player, seconds: ?f64) pw.StreamError!void {
         const channels = p.hum.channels;
         // 4096 frames is about 85 ms at 48 kHz: long enough that the
         // per-block work disappears and short enough that `--duration` lands

@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: © 2026 Jeffrey C. Ollie <jeff@ocjtech.us>
+# SPDX-License-Identifier: MIT
+
+version = 1
+SPDX-PackageName = "zig-wav"
+SPDX-PackageSupplier = "Jeffrey C. Ollie <jeff@ocjtech.us>"
+SPDX-PackageDownloadLocation = "git+https://git.jcollie.dev/jeff/zig-wav.git"
+
+# flake.lock is generated JSON, which has no comment syntax to carry a header.
+# It is dedicated to the public domain under CC0-1.0 rather than carrying the
+# project's MIT, so that pinning this flake creates no attribution obligation
+# and no rights are asserted over generated content.
+[[annotations]]
+path = "flake.lock"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "NONE"
+SPDX-License-Identifier = "CC0-1.0"
