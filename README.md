@@ -23,6 +23,22 @@ API documentation, generated from the doc comments, is published at
 explanation of *why* the synthesiser is shaped the way it is, so they are
 worth reading before the source.
 
+## Where this lives
+
+The repository has three homes, all carrying the same `main`.
+
+```console
+$ git clone https://git.jcollie.dev/jeff/wopr.git
+$ rad clone rad:z2hpahcXcgvnjmbvU2gDmNSJQRWBB
+```
+
+* Forgejo, at <https://git.jcollie.dev/jeff/wopr>, which is where the CI runs
+  and where the issues are.
+* Tangled, at <https://tangled.org/jcollie.dev/wopr>.
+* Radicle, as `rad:z2hpahcXcgvnjmbvU2gDmNSJQRWBB`. A Radicle repository is
+  findable only by its ID, so that string is the whole of what somebody needs
+  to seed or clone it.
+
 ## What the recording says
 
 Everything in `src/partials.zig` was measured rather than chosen, from a
