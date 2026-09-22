@@ -75,24 +75,27 @@ Right is twenty seconds of `wopr -s 42`. Both measured by
 | | recording | `wopr` |
 | --- | ---: | ---: |
 | strongest partial | 125.16 Hz | 125.16 Hz |
-| energy in 80–160 Hz | 98.08% | 98.48% |
-| 160–315 Hz | −19.24 dB | −20.50 dB |
-| 315–630 Hz | −24.23 dB | −24.80 dB |
-| 630–1250 Hz | −29.08 dB | −29.84 dB |
-| 1250–2500 Hz | −33.58 dB | −37.14 dB |
-| channel correlation | 0.971 | 0.972 |
-| crest factor | 11.28 dB | 10.73 dB |
-| level drift, ½ s to ½ s | 1.20 dB sd | 0.78 dB sd |
-| throb depth | 0.542 | 0.418 |
+| energy in 80–160 Hz | 98.08% | 98.77% |
+| 160–315 Hz | −19.24 dB | −21.85 dB |
+| 315–630 Hz | −24.23 dB | −26.08 dB |
+| 630–1250 Hz | −29.08 dB | −28.81 dB |
+| 1250–2500 Hz | −33.58 dB | −33.01 dB |
+| 5–10 kHz | −59.23 dB | −68.32 dB |
+| channel correlation | 0.971 | 0.967 |
+| crest factor | 11.28 dB | 10.94 dB |
+| level drift, ½ s to ½ s | 1.20 dB sd | 0.91 dB sd |
+| throb depth | 0.542 | 0.457 |
 
 Three of those are deliberately not matched, and it is worth saying which.
 
 * **Level.** The recording is normalised to full scale, peaking at −0.08 dBFS.
   `wopr` defaults to −18 dBFS RMS, which peaks around −7 and leaves room for
   whatever it is mixed under. `--gain` moves it.
-* **Above 2.5 kHz.** The recording has a bump at 2.5–5 kHz and a cliff above
-  it, which is what a lossy encoder leaves behind rather than anything the
-  machine room did. `wopr` is 12 dB quieter there and nothing is missing.
+* **Above 2.5 kHz.** The recording has a bump at 3 kHz and a cliff above
+  4 kHz, which is what a lossy encoder leaves behind rather than anything the
+  machine room did. The noise floor is fitted to the recording between 250 Hz
+  and 2.5 kHz, where it follows it to within about 3 dB, and constrained to
+  stay *under* it above that.
 * **Channel balance.** The recording's left channel is 1.6 dB above its
   right, which is why its side channel measures 16.4 dB under its mid where
   `wopr` measures 18.5 at the same correlation. That is a property of how the
@@ -102,6 +105,25 @@ The throb comes out a little shallower than the recording's. The beating is
 there and at the right rate — that is what `tests/acoustics.zig` pins — but
 the recording's six second window also carries a slow swell that a twenty
 second render averages away.
+
+### A note on the top two octaves
+
+The noise floor is shaped by a one-pole highpass, a one-pole lowpass that
+sets its tilt, and then **two Butterworth biquads** that end it. The biquads
+are there for a reason worth knowing before anyone simplifies them away.
+
+A cascade of one-pole lowpasses has no stopband. Its response flattens out
+towards Nyquist at `(1-a)/(1+a)`, so a corner low enough to shape a floor
+like this one leaves a broadband tail only about 30 dB down per pole — and
+the narrow band then needs 20 dB of make-up gain to come back to the level
+asked for. An earlier version shaped the hiss that way, matched every octave
+band below 1 kHz to within 2 dB, and hissed audibly at 4–8 kHz like air
+coming out of a duct. Nothing in the octave table showed it: each of those
+bands is dominated by the octave below, and the ear is not.
+
+A biquad has a double zero at Nyquist, so its stopband keeps going down.
+`tests/acoustics.zig` now asserts the energy above 4 kHz on its own terms
+rather than trusting a band total to reveal it.
 
 ## Using it
 

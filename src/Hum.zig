@@ -77,18 +77,17 @@ pub const Options = struct {
     level_dbfs: f64 = -18.0,
 
     /// The broadband floor under the hum, in dB relative to the tonal part.
-    /// Measured at about -17 dB over the recording's noise bands.
-    hiss_level_db: f64 = -18.0,
+    hiss_level_db: f64 = -18.5,
 
-    /// The band the hiss occupies, in hertz: a one-pole highpass at the
-    /// first and a two-pole lowpass at the second.
+    /// The shape of that floor.
     ///
-    /// The recording's floor is flat through a few hundred hertz and then
-    /// falls at about 12 dB an octave, which is the two lowpass poles. The
-    /// highpass is there because the floor also stops below the hum rather
-    /// than continuing down: white noise taken straight to DC puts 17 dB
-    /// more into the 20-40 Hz octave than the recording has in it.
-    hiss_band_hz: [2]f64 = .{ 110.0, 220.0 },
+    /// Fitted to the recording's own floor between 250 Hz and 2.5 kHz, which
+    /// it follows to within about 3 dB. Above 2.5 kHz the recording is not
+    /// showing its machine room any more -- it is showing what a lossy
+    /// encoder left behind, a bump at 3 kHz and a cliff above 4 -- so the
+    /// fit was constrained to stay *under* the recording there rather than
+    /// to match it.
+    hiss: BandShape = .{ .high_hz = 90, .tilt_hz = 150, .cutoff_hz = 2600 },
 
     /// Rumble, in dB relative to the tonal part: the room and the air
     /// handling under everything else.
@@ -100,11 +99,10 @@ pub const Options = struct {
     /// subwoofer.
     rumble_level_db: f64 = -34.0,
 
-    /// The band the rumble occupies, in hertz: a one-pole highpass at the
-    /// first and a two-pole lowpass at the second. It is a band rather than
-    /// everything below a cutoff because that is the shape the recording
-    /// has, falling away below 40 Hz as steeply as it does above 80.
-    rumble_band_hz: [2]f64 = .{ 42.0, 78.0 },
+    /// The shape of the rumble: a band rather than everything below a
+    /// cutoff, because the recording falls away below 40 Hz as steeply as it
+    /// does above 80.
+    rumble: BandShape = .{ .high_hz = 42, .tilt_hz = 78, .cutoff_hz = 300 },
 
     /// How far the whole bank drifts in frequency, as an RMS fraction. All
     /// the partials move together by this much, because they are one machine
@@ -159,6 +157,33 @@ pub const Options = struct {
 
 pub const Partial = partials.Partial;
 
+/// How one band of the noise floor is shaped.
+///
+/// Three stages, because the floor has to do two different things. Through
+/// the mid-band it has to *tilt*, following the recording's own slope, and a
+/// single pole does that. Above the band it has to actually stop, and a
+/// cascade of one-poles does not: a one-pole digital lowpass flattens out
+/// towards Nyquist at `(1-a)/(1+a)`, so a corner low enough to shape this
+/// floor leaves a broadband tail only about 30 dB down per pole. Two
+/// Butterworth biquads have a zero at Nyquist and keep falling, which is
+/// what puts the top of the band 40 dB further down than the tilt alone
+/// would.
+///
+/// This is not a detail. An earlier version shaped the hiss with two
+/// one-poles, matched the recording's octave band energies to within 2 dB
+/// everywhere below 1 kHz, and still had an audible hiss at 4 to 8 kHz --
+/// where the ear is at its most sensitive and where a band total, dominated
+/// by the octave below it, showed nothing wrong.
+pub const BandShape = struct {
+    /// A one-pole highpass: the floor stops below the hum rather than
+    /// continuing down to DC.
+    high_hz: f64,
+    /// A one-pole lowpass, which sets the slope through the mid-band.
+    tilt_hz: f64,
+    /// Two Butterworth biquads, which end the band.
+    cutoff_hz: f64,
+};
+
 pub const InitError = error{
     UnsupportedChannelCount,
     NoPartials,
@@ -167,7 +192,12 @@ pub const InitError = error{
 } || Allocator.Error;
 
 voices: []Voice,
-noise: [2]NoiseFloor,
+/// The shared floor, then one private to each channel. Three rather than
+/// two because a filter has state: stepping one generator twice per frame to
+/// get two channels runs its poles at twice the sample rate they were
+/// designed for, which moves every cutoff up an octave and makes the hiss
+/// audibly brighter than it was tuned to be.
+noise: [3]NoiseFloor,
 drift: Wander,
 rng: std.Random.DefaultPrng,
 sample_rate: f64,
@@ -262,6 +292,7 @@ pub fn init(gpa: Allocator, options: Options) InitError!Hum {
     return .{
         .voices = voices,
         .noise = .{
+            .init(rng.int(u64), options, rate),
             .init(rng.int(u64), options, rate),
             .init(rng.int(u64), options, rate),
         },
@@ -365,7 +396,7 @@ fn renderStereo(hum: *Hum, out: []f32) void {
     while (k < out.len) : (k += 2) {
         const shared = hum.noise[0].next(hum.hiss_gain, hum.rumble_gain);
         const l = hum.noise[1].next(hum.hiss_gain, hum.rumble_gain);
-        const r = hum.noise[1].next(hum.hiss_gain, hum.rumble_gain);
+        const r = hum.noise[2].next(hum.hiss_gain, hum.rumble_gain);
         out[k] = @floatCast((out[k] + common * shared + hum.noise_spread * l) * hum.gain);
         out[k + 1] = @floatCast((out[k + 1] + common * shared + hum.noise_spread * r) * hum.gain);
     }
@@ -425,8 +456,8 @@ const NoiseFloor = struct {
     fn init(seed: u64, options: Options, rate: f64) NoiseFloor {
         return .{
             .rng = .init(seed),
-            .hiss = .init(options.hiss_band_hz[0], options.hiss_band_hz[1], rate),
-            .rumble = .init(options.rumble_band_hz[0], options.rumble_band_hz[1], rate),
+            .hiss = .init(options.hiss, rate),
+            .rumble = .init(options.rumble, rate),
         };
     }
 
@@ -439,59 +470,51 @@ const NoiseFloor = struct {
     }
 };
 
-/// White noise through an optional one-pole highpass and two one-pole
-/// lowpasses, scaled back to unit RMS.
+/// White noise shaped by a `BandShape` and scaled back to unit RMS.
 ///
-/// The scaling is what lets the cutoffs be moved without also having to
+/// The scaling is what lets the corners be moved without also having to
 /// re-tune the level: a `_level_db` option means the same loudness whatever
 /// band it is spread across.
 const Band = struct {
-    high: ?OnePole,
-    low: [2]OnePole,
+    high: OnePole,
+    tilt: OnePole,
+    top: [2]Biquad,
     scale: f64,
 
-    fn init(high_hz: ?f64, low_hz: f64, rate: f64) Band {
-        const high: ?OnePole = if (high_hz) |hz| .init(hz, rate) else null;
-        const low: OnePole = .init(low_hz, rate);
+    fn init(shape: BandShape, rate: f64) Band {
+        const high: OnePole = .init(shape.high_hz, rate);
+        const tilt: OnePole = .init(shape.tilt_hz, rate);
+        const top: Biquad = .lowpass(shape.cutoff_hz, rate);
         return .{
             .high = high,
-            .low = .{ low, low },
-            .scale = 1 / responseRms(high, low),
+            .tilt = tilt,
+            .top = @splat(top),
+            .scale = 1 / responseRms(high, tilt, top),
         };
     }
 
     fn next(b: *Band, rng: std.Random) f64 {
         var v = rng.floatNorm(f64) * b.scale;
         // A one-pole highpass is what the matching lowpass does not pass.
-        if (b.high) |*p| v -= p.step(v);
-        for (&b.low) |*p| v = p.step(v);
+        v -= b.high.step(v);
+        v = b.tilt.step(v);
+        for (&b.top) |*q| v = q.step(v);
         return v;
     }
 
     /// The RMS this chain produces from unit-variance white noise.
     ///
     /// Integrated over the spectrum rather than composed from each stage's
-    /// own figure, because the second lowpass is not being fed white noise
-    /// and so does not attenuate it by the same factor the first one did.
-    fn responseRms(high: ?OnePole, low: OnePole) f64 {
+    /// own figure, because no stage after the first is being fed white noise
+    /// and so none of them attenuates it by the factor it would.
+    fn responseRms(high: OnePole, tilt: OnePole, top: Biquad) f64 {
         const steps = 4096;
         var sum: f64 = 0;
         for (0..steps) |i| {
             const w = std.math.pi * (@as(f64, @floatFromInt(i)) + 0.5) / steps;
-            const cos_w = @cos(w);
-            var power: f64 = 1;
-            if (high) |p| {
-                // y = x - lp(x), so H = a(1 - e^-jw) / (1 - a e^-jw).
-                const a = p.pole;
-                power *= a * a * (2 - 2 * cos_w) / (1 - 2 * a * cos_w + a * a);
-            }
-            {
-                // y = (1-a)x + a*y[-1], twice.
-                const a = low.pole;
-                const one = (1 - a) * (1 - a) / (1 - 2 * a * cos_w + a * a);
-                power *= one * one;
-            }
-            sum += power;
+            const power = high.highpassPower(w) * tilt.lowpassPower(w);
+            const one = top.power(w);
+            sum += power * one * one;
         }
         return @sqrt(sum / steps);
     }
@@ -508,6 +531,78 @@ const OnePole = struct {
     fn step(p: *OnePole, in: f64) f64 {
         p.state = in * (1 - p.pole) + p.state * p.pole;
         return p.state;
+    }
+
+    /// |H(w)|^2 for `step` itself: y = (1-a)x + a*y[-1].
+    fn lowpassPower(p: OnePole, w: f64) f64 {
+        const a = p.pole;
+        return (1 - a) * (1 - a) / (1 - 2 * a * @cos(w) + a * a);
+    }
+
+    /// |H(w)|^2 for `in - step(in)`, which is the matching highpass:
+    /// H = a(1 - e^-jw) / (1 - a e^-jw).
+    fn highpassPower(p: OnePole, w: f64) f64 {
+        const a = p.pole;
+        return a * a * (2 - 2 * @cos(w)) / (1 - 2 * a * @cos(w) + a * a);
+    }
+};
+
+/// A second-order section, in the direct form and with the Audio EQ Cookbook
+/// coefficients.
+///
+/// Only the lowpass is here, because only the lowpass is needed. What it has
+/// that a pair of one-poles does not is a double zero at Nyquist, so its
+/// stopband keeps going down instead of settling on a floor.
+const Biquad = struct {
+    b0: f64,
+    b1: f64,
+    b2: f64,
+    a1: f64,
+    a2: f64,
+    x1: f64 = 0,
+    x2: f64 = 0,
+    y1: f64 = 0,
+    y2: f64 = 0,
+
+    fn lowpass(cutoff_hz: f64, rate: f64) Biquad {
+        // Clamped below Nyquist: the bilinear transform puts the corner at
+        // infinity there, and a `--rate` low enough to reach it should give
+        // a dull noise floor rather than a division by zero.
+        const cutoff = @min(cutoff_hz, rate * 0.45);
+        const w0 = 2 * std.math.pi * cutoff / rate;
+        // Butterworth: the flattest passband a single section has.
+        const q = std.math.sqrt1_2;
+        const alpha = @sin(w0) / (2 * q);
+        const cos_w0 = @cos(w0);
+        const a0 = 1 + alpha;
+        return .{
+            .b0 = (1 - cos_w0) / 2 / a0,
+            .b1 = (1 - cos_w0) / a0,
+            .b2 = (1 - cos_w0) / 2 / a0,
+            .a1 = -2 * cos_w0 / a0,
+            .a2 = (1 - alpha) / a0,
+        };
+    }
+
+    fn step(q: *Biquad, x: f64) f64 {
+        const y = q.b0 * x + q.b1 * q.x1 + q.b2 * q.x2 - q.a1 * q.y1 - q.a2 * q.y2;
+        q.x2 = q.x1;
+        q.x1 = x;
+        q.y2 = q.y1;
+        q.y1 = y;
+        return y;
+    }
+
+    fn power(q: Biquad, w: f64) f64 {
+        const c1 = @cos(w);
+        const s1 = @sin(w);
+        const c2 = @cos(2 * w);
+        const s2 = @sin(2 * w);
+        const num_re = q.b0 + q.b1 * c1 + q.b2 * c2;
+        const num_im = -(q.b1 * s1 + q.b2 * s2);
+        const den_re = 1 + q.a1 * c1 + q.a2 * c2;
+        const den_im = -(q.a1 * s1 + q.a2 * s2);
+        return (num_re * num_re + num_im * num_im) / (den_re * den_re + den_im * den_im);
     }
 };
 

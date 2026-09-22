@@ -126,6 +126,35 @@ test "almost all the energy is in the 80-160 Hz octave" {
     try testing.expect(octave / total > 0.95);
 }
 
+test "the floor stops before it becomes hiss" {
+    // This is the test that was missing, and a listener found what it would
+    // have found: an earlier noise floor shaped by two one-pole lowpasses
+    // matched the recording's octave band energies to within 2 dB everywhere
+    // below 1 kHz and still hissed audibly at 4 to 8 kHz. A one-pole cascade
+    // does not have a stopband -- its response settles on a floor rather than
+    // continuing down -- and a band total, dominated by the octave below it,
+    // shows nothing at all wrong.
+    //
+    // So this asserts the top of the spectrum on its own terms. The
+    // recording has essentially nothing above 4 kHz: its 5-10 kHz octave
+    // measures 59 dB under the total and its 10-20 kHz octave 67 dB under.
+    const x = try render(testing.allocator, n, .{ .channels = 1, .seed = 13 });
+    defer testing.allocator.free(x);
+
+    const mag = try spectrum(testing.allocator, x);
+    defer testing.allocator.free(mag);
+
+    var total: f64 = 0;
+    var above: f64 = 0;
+    for (mag, 0..) |m, i| {
+        const hz = @as(f64, @floatFromInt(i)) * rate / n;
+        const e = m * m;
+        total += e;
+        if (hz >= 4000) above += e;
+    }
+    try testing.expect(10 * @log10(above / total) < -55);
+}
+
 test "the sample rate does not move the pitch" {
     for ([_]u32{ 22_050, 48_000, 96_000 }) |sr| {
         const x = try render(testing.allocator, n, .{ .channels = 1, .seed = 5, .sample_rate = sr });
