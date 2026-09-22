@@ -28,14 +28,15 @@ pub const Options = struct {
     environ: ?std.process.Environ = null,
 };
 
-pub const Error = error{
+/// The same shape as the real module's, plus the one that always happens.
+pub const Error = wopr.Hum.InitError || error{
     NotStreaming,
     /// This build has no way to reach an audio device.
     PlaybackUnsupported,
-} || wopr.Hum.InitError;
+};
 
 pub const Player = struct {
-    pub fn open(_: Allocator, _: wopr.Hum.Options, _: Options) !Player {
+    pub fn open(_: Allocator, _: wopr.Hum.Options, _: Options) Error!Player {
         return error.PlaybackUnsupported;
     }
 
@@ -49,7 +50,7 @@ pub const Player = struct {
         return 0;
     }
 
-    pub fn run(_: *Player, _: ?f64) !void {
+    pub fn run(_: *Player, _: ?f64) Error!void {
         return error.PlaybackUnsupported;
     }
 };

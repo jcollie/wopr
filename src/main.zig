@@ -38,14 +38,15 @@ const defaults: wopr.Hum.Options = .{};
 const usage =
     \\usage: wopr [options]
     \\
-    \\Writes an endless WOPR machine room hum, as a WAVE stream on stdout
-    \\unless told otherwise.
+    \\An endless WOPR machine room hum. Plays when run from a terminal;
+    \\writes a WAVE stream to stdout when redirected or piped.
     \\
     \\  -p, --play            play through PipeWire; the default from a terminal
     \\      --sink NAME       play to this sink rather than the default one
     \\  -o, --output PATH     write a file here instead
     \\  -d, --duration SECS   stop after SECS seconds (default: never stop)
-    \\  -r, --rate HZ         sample rate (default 44100)
+    \\  -r, --rate HZ         sample rate (default 44100); when playing, the
+    \\                        graph has the last word and says what it chose
     \\  -c, --channels N      1 or 2 (default 2)
     \\  -f, --format FMT      s16, s24 or f32 (default s16); written files only
     \\      --raw             headerless PCM rather than a WAVE stream
@@ -233,7 +234,15 @@ fn playHum(
     });
     try stderr.flush();
 
-    try player.run(config.duration_seconds);
+    // The graph going away -- PipeWire restarting, the session manager
+    // tearing the node down -- is a thing that happens to a program left
+    // running for hours, and it deserves a line rather than a stack trace
+    // through the ring buffer.
+    player.run(config.duration_seconds) catch |err| {
+        try stderr.print("wopr: playback stopped: {t}\n", .{err});
+        try stderr.flush();
+        std.process.exit(1);
+    };
 }
 
 fn stream(out: *Io.Writer, hum: *wopr.Hum, config: Config, total_frames: ?u64) !void {

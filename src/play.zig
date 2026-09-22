@@ -42,10 +42,17 @@ pub const Options = struct {
     environ: ?std.process.Environ = null,
 };
 
-pub const Error = error{
-    /// The graph never started the stream.
+/// What this adds to whatever `pw.Stream` and `Hum.init` can fail with.
+///
+/// The functions below leave their error sets to be inferred rather than
+/// naming the union, because `zig-pipewire` does not re-export the stream's
+/// error set from its root -- `pw.Stream.open` returns it, and a caller
+/// cannot write it down. The stand-in names its set for the same reason in
+/// reverse: it has no `pw` to union with.
+pub const Error = wopr.Hum.InitError || error{
+    /// The daemon answered but the graph never started the stream.
     NotStreaming,
-} || wopr.Hum.InitError;
+};
 
 pub const Player = struct {
     gpa: Allocator,
