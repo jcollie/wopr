@@ -391,11 +391,16 @@ its own audio and measures that.
 $ nix develop
 $ zig build test --summary all   # unit tests and the acoustic ones
 $ zig build check                # compile what the tests do not
-$ zig build site-serve           # the published site at localhost:8000
-$ zig build docs-serve           # just the API docs, same port
+$ zig build docs-serve           # read the API docs at localhost:8000
 $ zig fmt --check .
 $ reuse lint
 ```
+
+To look at the published site before it goes up, `zig build site` and then
+`python3 -m http.server --directory zig-out/site 8000`. Not `docs-serve`:
+that server reads one path out of one directory and knows nothing about
+directory indexes or audio types, and keeping it that narrow is what keeps
+a convenience from becoming a way out of the directory it was pointed at.
 
 `zig build run` plays it, since the build runner inherits the terminal:
 `zig build run -- --duration 10 --bursts off`, and anything else after the

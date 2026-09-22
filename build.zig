@@ -215,19 +215,16 @@ pub fn build(b: *std.Build) void {
     const docs_serve_step = b.step("docs-serve", "Serve the API documentation over HTTP");
     docs_serve_step.dependOn(&run_docs_server.step);
 
-    // The same server pointed at the whole site rather than just the API
-    // documentation, which is what actually gets published: the page, the
-    // sample it plays, and the documentation under `api/`. Worth having
-    // separately from `docs-serve` because a page is a thing to look at
-    // before it goes up.
-    const run_site_server = b.addRunArtifact(docs_server);
-    run_site_server.step.dependOn(site_step);
-    run_site_server.addArg(b.getInstallPath(.prefix, "site"));
-    run_site_server.addArg(b.fmt("{d}", .{docs_port}));
-    run_site_server.stdio = .inherit;
-
-    const site_serve_step = b.step("site-serve", "Serve the published site over HTTP");
-    site_serve_step.dependOn(&run_site_server.step);
+    // There is deliberately no `site-serve`. `tools/docs_server.zig` reads
+    // one path out of one directory and nothing else -- no directory
+    // indexes, no media types beyond what `zig build docs` emits -- and
+    // that narrowness is the point: it is the whole of what keeps a server
+    // written for convenience from being a way out of the directory it was
+    // pointed at. Previewing the site wants an index for `api/` and a type
+    // for `hum.wav`, and the answer is to use something that already does
+    // both rather than to teach this one:
+    //
+    //     python3 -m http.server --directory zig-out/site 8000
 
     // The server has tests of its own; without this they would never run.
     // And nothing else builds it, so it belongs in `check` or it could stop

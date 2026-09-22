@@ -122,11 +122,6 @@ fn serve(
     var path = target[0..path_end];
     if (std.mem.startsWith(u8, path, "/")) path = path[1..];
     if (path.len == 0) path = "index.html";
-    // A directory is its `index.html`, so that `api/` works as a link and
-    // not only `api/index.html`. The site published from here has the
-    // documentation under a subdirectory, so this is the difference between
-    // its one internal link working and not.
-    if (std.mem.endsWith(u8, path, "/")) path = try std.fmt.allocPrint(gpa, "{s}index.html", .{path});
 
     // The documentation directory is the whole world this server knows about.
     if (std.mem.indexOf(u8, path, "..") != null or std.fs.path.isAbsolute(path)) {
@@ -143,8 +138,7 @@ fn serve(
     });
 }
 
-/// Enough of a MIME table for what `zig build docs` and `zig build site`
-/// emit.
+/// Enough of a MIME table for what `zig build docs` emits.
 fn mimeType(path: []const u8) []const u8 {
     const extension = std.fs.path.extension(path);
     const table = [_]struct { []const u8, []const u8 }{
@@ -155,12 +149,6 @@ fn mimeType(path: []const u8) []const u8 {
         .{ ".tar", "application/x-tar" },
         .{ ".json", "application/json" },
         .{ ".svg", "image/svg+xml" },
-        // The site plays a sample. Served as `application/octet-stream` a
-        // browser will download it rather than play it, which makes the one
-        // thing the page is for not work.
-        .{ ".wav", "audio/wav" },
-        .{ ".flac", "audio/flac" },
-        .{ ".mp3", "audio/mpeg" },
     };
     for (table) |entry| {
         if (std.mem.eql(u8, extension, entry[0])) return entry[1];
@@ -175,6 +163,5 @@ test mimeType {
     try testing.expectEqualStrings("application/wasm", mimeType("main.wasm"));
     try testing.expectEqualStrings("application/x-tar", mimeType("sources.tar"));
     try testing.expectEqualStrings("text/javascript; charset=utf-8", mimeType("main.js"));
-    try testing.expectEqualStrings("audio/wav", mimeType("hum.wav"));
     try testing.expectEqualStrings("application/octet-stream", mimeType("noextension"));
 }
