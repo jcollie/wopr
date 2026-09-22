@@ -29,19 +29,24 @@ worth reading before the source.
 
 ## Where this lives
 
-The repository has three homes, all carrying the same `main`.
+The same history, in four places. Forgejo is where the CI runs and where the
+issues are; the rest are mirrors.
+
+| | |
+| --- | --- |
+| GitHub | <https://github.com/jcollie/wopr> |
+| Forgejo | <https://git.jcollie.dev/jeff/wopr> |
+| Tangled | <https://tangled.org/jcollie.dev/wopr> |
+| Radicle | `rad:z2hpahcXcgvnjmbvU2gDmNSJQRWBB` |
 
 ```console
+$ git clone https://github.com/jcollie/wopr.git
 $ git clone https://git.jcollie.dev/jeff/wopr.git
 $ rad clone rad:z2hpahcXcgvnjmbvU2gDmNSJQRWBB
 ```
 
-* Forgejo, at <https://git.jcollie.dev/jeff/wopr>, which is where the CI runs
-  and where the issues are.
-* Tangled, at <https://tangled.org/jcollie.dev/wopr>.
-* Radicle, as `rad:z2hpahcXcgvnjmbvU2gDmNSJQRWBB`. A Radicle repository is
-  findable only by its ID, so that string is the whole of what somebody needs
-  to seed or clone it.
+A Radicle repository is findable only by its ID, so the line above is the one
+thing a reader needs in order to seed or clone it.
 
 ## What the recording says
 
