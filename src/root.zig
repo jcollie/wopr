@@ -26,6 +26,10 @@ pub const Hum = @import("Hum.zig");
 /// The measured partials of the reference recording, and what they mean.
 pub const partials = @import("partials.zig");
 
+/// The two tone bursts heard over the hum -- the ping and the pong -- and
+/// how often they arrive.
+pub const bursts = @import("bursts.zig");
+
 /// Enough of RIFF/WAVE to hand the samples to a player.
 pub const wav = @import("wav.zig");
 

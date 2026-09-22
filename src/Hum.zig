@@ -46,6 +46,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const partials = @import("partials.zig");
+const burst_table = @import("bursts.zig");
 
 /// The block size at which the drift and shimmer are recomputed, in frames.
 ///
@@ -136,6 +137,16 @@ pub const Options = struct {
     /// How long a partial takes to wander in level, in seconds.
     shimmer_seconds: f64 = 4.0,
 
+    /// The tone bursts heard over the hum -- the ping and the pong. Empty
+    /// for a hum with nothing happening over it.
+    bursts: []const Burst = burst_table.wopr,
+
+    /// How often those arrive, and in what pattern.
+    timing: Timing = .{},
+
+    /// The room the bursts echo in, or `null` for no echo.
+    echo: ?EchoShape = .{},
+
     /// Stereo spread, 0 to 1. Ignored when `channels` is 1.
     ///
     /// 0 puts the same signal in both channels. 1 is a pair of microphones
@@ -167,6 +178,48 @@ pub const Options = struct {
 };
 
 pub const Partial = partials.Partial;
+pub const Burst = burst_table.Burst;
+pub const Timing = burst_table.Timing;
+
+/// The room the bursts echo in.
+///
+/// One delay line per channel with a little feedback, which is a poor
+/// reverb and exactly the right amount of one: what the recording has is a
+/// discrete repeat about 210 ms after each burst, not a tail. Its envelope
+/// autocorrelation peaks at 200 to 215 ms.
+///
+/// The hum does not go through it, and not for want of realism. A
+/// continuous sound convolved with its own echo is the same continuous
+/// sound very slightly thicker; there is nothing to hear, and it would cost
+/// a second delay line long enough to matter.
+pub const EchoShape = struct {
+    /// Delay for each channel, in seconds.
+    ///
+    /// Different per channel on purpose. A room is not symmetric, and two
+    /// equal delays put the repeat in the middle of the head where the dry
+    /// burst already is; a few tens of milliseconds between them is what
+    /// makes it sound like a space rather than a copy.
+    delay_s: [2]f64 = .{ 0.205, 0.232 },
+
+    /// How much of each repeat feeds the next.
+    ///
+    /// Low, so that a burst gets *one* audible repeat rather than a train
+    /// of them. `level_db` sets how loud the echo is and this sets how many
+    /// there are, and the two are easy to confuse: the first version had
+    /// 0.42 here, which put a third and fourth repeat 14 and 21 dB down --
+    /// inaudible in the recording, where the noise floor covers them, and
+    /// plainly audible here, where by default there is no floor. It made
+    /// the whole thing sound like it was running fast when the burst rate
+    /// was right.
+    feedback: f64 = 0.15,
+
+    /// The repeats lose their top end, as they would off real surfaces.
+    /// A one-pole lowpass in the feedback path, at this frequency.
+    damping_hz: f64 = 2600.0,
+
+    /// Level of the first repeat, in dB relative to the dry burst.
+    level_db: f64 = -7.0,
+};
 
 /// How one band of the noise floor is shaped.
 ///
@@ -212,7 +265,21 @@ pub const InitError = error{
     NoPartials,
     /// A partial at or above half the sample rate has nowhere to be.
     PartialAboveNyquist,
+    /// A burst with more than `burst_table.max_partials` of them, or none.
+    BadBurst,
+    /// An echo delay that is not a positive number of seconds, or is longer
+    /// than `max_echo_seconds`.
+    BadEchoDelay,
 } || Allocator.Error;
+
+/// The longest echo that will be allocated, which bounds what a bad option
+/// can ask the allocator for.
+pub const max_echo_seconds = 4.0;
+
+/// How many bursts may sound at once. The recording's flurries put them
+/// 80 ms apart and each lasts about 100 ms, so two or three overlap; this
+/// is enough that a burst is never cut short to make room for the next.
+const max_burst_voices = 6;
 
 voices: []Voice,
 /// The shared floor, then one private to each channel. Three rather than
@@ -234,6 +301,34 @@ noise_spread: f64,
 /// Frames left before the control values are recomputed.
 countdown: u32 = 0,
 
+// -- the bursts over the hum -------------------------------------------------
+
+/// What may be fired. Empty means nothing is.
+bursts: []const Burst,
+timing: Timing,
+/// `timing`'s intervals, already multiplied by `Timing.scale` and the
+/// sample rate, so firing one costs no division.
+gap_frames: [2]f64,
+rest_frames: [2]f64,
+/// The bursts draw from a generator of their own, never from `rng`.
+///
+/// Not tidiness: `render` runs the hum's control rate and the burst
+/// scheduler over the same buffer, and a caller is free to ask for the
+/// frames in any sized pieces it likes. Sharing one generator would
+/// interleave the two streams of draws differently for a 64 frame call than
+/// for a 4096 frame one, and the same seed would stop meaning the same
+/// audio.
+burst_rng: std.Random.DefaultPrng,
+sounding: [max_burst_voices]BurstVoice = @splat(.{}),
+/// Frames until the next burst starts.
+until_burst: u64 = 0,
+/// Bursts left in the flurry being played, and which kind it is made of.
+flurry_left: u32 = 0,
+flurry_kind: usize = 0,
+/// Peak amplitude for each burst kind, already including the output level.
+burst_amp: []f64,
+echo: ?Echo,
+
 pub fn init(gpa: Allocator, options: Options) InitError!Hum {
     if (options.channels != 1 and options.channels != 2) return error.UnsupportedChannelCount;
     if (options.partials.len == 0) return error.NoPartials;
@@ -247,6 +342,15 @@ pub fn init(gpa: Allocator, options: Options) InitError!Hum {
         if (p.freq <= 0 or p.freq * headroom >= nyquist) return error.PartialAboveNyquist;
     }
 
+    for (options.bursts) |b| {
+        if (b.partials.len == 0 or b.partials.len > burst_table.max_partials) return error.BadBurst;
+        if (!(b.weight > 0)) return error.BadBurst;
+        for (b.partials) |p| if (p.freq <= 0 or p.freq >= nyquist) return error.BadBurst;
+    }
+    if (options.echo) |e| for (e.delay_s) |d| {
+        if (!(d > 0) or d > max_echo_seconds) return error.BadEchoDelay;
+    };
+
     var prng: std.Random.DefaultPrng = .init(options.seed);
     const rng = prng.random();
 
@@ -256,21 +360,30 @@ pub fn init(gpa: Allocator, options: Options) InitError!Hum {
     const voices = try gpa.alloc(Voice, options.partials.len);
     errdefer gpa.free(voices);
 
+    const burst_amp = try gpa.alloc(f64, options.bursts.len);
+    errdefer gpa.free(burst_amp);
+
+    var echo: ?Echo = if (options.echo) |shape|
+        try Echo.init(gpa, shape, rate, options.channels)
+    else
+        null;
+    errdefer if (echo) |*e| e.deinit(gpa);
+
     var power: f64 = 0;
     for (voices, options.partials) |*v, p| {
         power += p.amp * p.amp;
 
-        // A pan angle either side of centre, for texture, and the phase
+        // A pan either side of centre, for texture, and the phase
         // difference the microphone spacing gives this partial, which is
         // what actually sets the width.
-        const pan = std.math.pi / 4.0 + width * 0.12 * rng.floatNorm(f64);
+        const placed = pan(width * 0.24, rng);
         const skew = p.freq * width * options.spacing_seconds;
 
         v.* = .{
             .freq = p.freq,
             .amp = p.amp,
             .phase = .{ rng.float(f64), 0 },
-            .gain = .{ @cos(pan) * std.math.sqrt2, @sin(pan) * std.math.sqrt2 },
+            .gain = placed,
             .freq_wander = .init(options.drift_seconds, control_rate, options.voice_drift),
             .amp_wander = .init(options.shimmer_seconds, control_rate, options.shimmer_db),
             .inc = 0,
@@ -312,8 +425,33 @@ pub fn init(gpa: Allocator, options: Options) InitError!Hum {
     const c = @log(@as(f64, 10)) / 20;
     const shimmer_bias = @exp(-c * c * options.shimmer_db * options.shimmer_db);
 
+    // The bursts are specified relative to the hum, and `gain` has already
+    // been folded into the hum, so their amplitudes carry the output level
+    // directly and are added after it.
+    for (burst_amp, options.bursts) |*a, b| {
+        a.* = level * std.math.pow(f64, 10, b.level_db / 20);
+    }
+
+    const interval_scale = options.timing.scale() * rate;
+
     return .{
         .voices = voices,
+        .bursts = options.bursts,
+        .timing = options.timing,
+        .gap_frames = .{
+            options.timing.gap_s[0] * interval_scale,
+            options.timing.gap_s[1] * interval_scale,
+        },
+        .rest_frames = .{
+            options.timing.rest_s[0] * interval_scale,
+            options.timing.rest_s[1] * interval_scale,
+        },
+        // Somewhere inside the first rest, so that two instances started
+        // together do not ping in unison.
+        .until_burst = @intFromFloat(rng.float(f64) * options.timing.rest_s[1] * interval_scale),
+        .burst_rng = .init(rng.int(u64)),
+        .burst_amp = burst_amp,
+        .echo = echo,
         .noise = .{
             .init(rng.int(u64), options, rate),
             .init(rng.int(u64), options, rate),
@@ -332,6 +470,8 @@ pub fn init(gpa: Allocator, options: Options) InitError!Hum {
 
 pub fn deinit(hum: *Hum, gpa: Allocator) void {
     gpa.free(hum.voices);
+    gpa.free(hum.burst_amp);
+    if (hum.echo) |*e| e.deinit(gpa);
     hum.* = undefined;
 }
 
@@ -356,6 +496,11 @@ pub fn render(hum: *Hum, out: []f32) void {
         if (hum.channels == 1) hum.renderMono(out[i..][0..run]) else hum.renderStereo(out[i..][0 .. run * 2]);
         i += run * hum.channels;
     }
+
+    // Added over the finished hum rather than mixed into it, because their
+    // levels are relative to it and because they go through the echo and it
+    // does not.
+    hum.renderBursts(out);
 }
 
 /// Recompute the per-partial frequency and level. Called once per
@@ -424,6 +569,229 @@ fn renderStereo(hum: *Hum, out: []f32) void {
         out[k + 1] = @floatCast((out[k + 1] + common * shared + hum.noise_spread * r) * hum.gain);
     }
 }
+
+/// Render the bursts, and their echo, over what is already in `out`.
+fn renderBursts(hum: *Hum, out: []f32) void {
+    if (hum.bursts.len == 0 and hum.echo == null) return;
+    const rng = hum.burst_rng.random();
+    const channels = hum.channels;
+    const frames = out.len / channels;
+
+    for (0..frames) |i| {
+        if (hum.until_burst == 0) hum.fire(rng);
+        hum.until_burst -= 1;
+
+        var dry: [2]f64 = .{ 0, 0 };
+        for (&hum.sounding) |*v| v.add(&dry, channels);
+
+        if (hum.echo) |*e| e.process(&dry, channels);
+
+        for (0..channels) |ch| {
+            const k = i * channels + ch;
+            out[k] += @floatCast(dry[ch]);
+        }
+    }
+}
+
+/// Start a burst, and decide when the next one is.
+fn fire(hum: *Hum, rng: std.Random) void {
+    if (hum.bursts.len == 0) {
+        // Nothing to fire, but the countdown still has to go somewhere
+        // other than zero or this is called every frame.
+        hum.until_burst = @intFromFloat(@max(1, hum.rest_frames[1]));
+        return;
+    }
+
+    if (hum.flurry_left == 0) {
+        hum.flurry_kind = hum.pickBurst(rng);
+        hum.flurry_left = geometric(rng, hum.timing.flurry);
+    }
+
+    // Nearly always the flurry's own kind; occasionally the other, which is
+    // what the recording does at 7.34 s where a ping and a pong land within
+    // three milliseconds of each other.
+    const kind = if (hum.bursts.len > 1 and rng.float(f64) < hum.timing.stray)
+        hum.pickBurst(rng)
+    else
+        hum.flurry_kind;
+    hum.start(kind, rng);
+
+    hum.flurry_left -= 1;
+    const range = if (hum.flurry_left == 0) hum.rest_frames else hum.gap_frames;
+    const span = range[0] + rng.float(f64) * (range[1] - range[0]);
+    hum.until_burst = @intFromFloat(@max(1, span));
+}
+
+/// Choose a burst kind, weighted by `Burst.weight`.
+fn pickBurst(hum: *Hum, rng: std.Random) usize {
+    var total: f64 = 0;
+    for (hum.bursts) |b| total += b.weight;
+    var pick = rng.float(f64) * total;
+    for (hum.bursts, 0..) |b, i| {
+        pick -= b.weight;
+        if (pick <= 0) return i;
+    }
+    return hum.bursts.len - 1;
+}
+
+/// Hand a burst to a voice.
+fn start(hum: *Hum, kind: usize, rng: std.Random) void {
+    const burst = &hum.bursts[kind];
+
+    // The oldest sounding voice if none is free. Stealing is better than
+    // dropping: a flurry that runs past the polyphony should crowd, which
+    // is what a room does, rather than go quiet.
+    var slot: *BurstVoice = &hum.sounding[0];
+    var oldest: u32 = 0;
+    for (&hum.sounding) |*v| {
+        if (v.burst == null) {
+            slot = v;
+            break;
+        }
+        if (v.frame >= oldest) {
+            oldest = v.frame;
+            slot = v;
+        }
+    }
+
+    // The recording's fundamentals vary by about half a percent from one
+    // occurrence to the next, so these do too: identical pitch every time
+    // is the sound of a sample being retriggered.
+    const detune = 1 + 0.004 * rng.floatNorm(f64);
+    const inv_rate = 1 / hum.sample_rate;
+
+    slot.* = .{
+        .burst = burst,
+        .amp = hum.burst_amp[kind],
+        .attack = @max(1, @as(u32, @intFromFloat(burst.attack_s * hum.sample_rate))),
+        .hold = @intFromFloat(@max(0, burst.hold_s *
+            (1 + burst.hold_spread * (rng.float(f64) * 2 - 1)) * hum.sample_rate)),
+        .release = @max(1, @as(u32, @intFromFloat(burst.release_s * hum.sample_rate))),
+        .gain = pan(hum.noise_spread * 0.9, rng),
+    };
+    for (burst.partials, 0..) |p, k| {
+        slot.inc[k] = p.freq * detune * inv_rate;
+        // A phase of its own, so two overlapping bursts of the same kind do
+        // not reinforce into one twice as loud.
+        slot.phase[k] = rng.float(f64);
+    }
+}
+
+/// Equal-power gains for a source placed `spread` either side of centre.
+fn pan(spread: f64, rng: std.Random) [2]f64 {
+    const angle = std.math.pi / 4.0 + spread * 0.5 * rng.floatNorm(f64);
+    return .{ @cos(angle) * std.math.sqrt2, @sin(angle) * std.math.sqrt2 };
+}
+
+/// A geometric draw with the given mean, at least 1 and at most 32.
+fn geometric(rng: std.Random, mean: f64) u32 {
+    if (!(mean > 1)) return 1;
+    const p = 1 / mean;
+    const u = @max(rng.float(f64), 1e-12);
+    const n = 1 + @floor(@log(u) / @log(1 - p));
+    return @intFromFloat(std.math.clamp(n, 1, 32));
+}
+
+/// One sounding burst.
+const BurstVoice = struct {
+    /// `null` when the voice is free.
+    burst: ?*const Burst = null,
+    phase: [burst_table.max_partials]f64 = @splat(0),
+    inc: [burst_table.max_partials]f64 = @splat(0),
+    amp: f64 = 0,
+    gain: [2]f64 = .{ 1, 1 },
+    /// Frames since it started.
+    frame: u32 = 0,
+    attack: u32 = 0,
+    hold: u32 = 0,
+    release: u32 = 0,
+
+    fn add(v: *BurstVoice, dst: *[2]f64, channels: u8) void {
+        const burst = v.burst orelse return;
+
+        var sample: f64 = 0;
+        for (burst.partials, 0..) |p, k| {
+            sample += p.amp * sine(v.phase[k]);
+            v.phase[k] = wrap(v.phase[k] + v.inc[k]);
+        }
+        sample *= v.amp * v.envelope();
+
+        if (channels == 1) {
+            dst[0] += sample;
+        } else {
+            dst[0] += sample * v.gain[0];
+            dst[1] += sample * v.gain[1];
+        }
+
+        v.frame += 1;
+        if (v.frame >= v.attack + v.hold + v.release) v.burst = null;
+    }
+
+    /// A raised cosine up, a flat hold, a raised cosine down.
+    ///
+    /// Flat-topped rather than struck-and-decaying because that is what the
+    /// recording shows: the ping reaches full level within 5 ms, holds
+    /// within 3 dB for 70 ms, and is gone 10 ms after that. Raised cosine at
+    /// both ends rather than linear because a corner in the envelope is a
+    /// click, and at this level a click is the only thing anybody would
+    /// hear.
+    fn envelope(v: BurstVoice) f64 {
+        if (v.frame < v.attack) {
+            const u = @as(f64, @floatFromInt(v.frame)) / @as(f64, @floatFromInt(v.attack));
+            return 0.5 - 0.5 * @cos(std.math.pi * u);
+        }
+        const held = v.frame - v.attack;
+        if (held < v.hold) return 1;
+        const out = held - v.hold;
+        if (out >= v.release) return 0;
+        const u = @as(f64, @floatFromInt(out)) / @as(f64, @floatFromInt(v.release));
+        return 0.5 + 0.5 * @cos(std.math.pi * u);
+    }
+};
+
+/// A delay line per channel with damped feedback: the room the bursts are
+/// heard in.
+const Echo = struct {
+    line: [2][]f64,
+    pos: [2]usize,
+    damping: [2]OnePole,
+    feedback: f64,
+    level: f64,
+    channels: u8,
+
+    fn init(gpa: Allocator, shape: EchoShape, rate: f64, channels: u8) Allocator.Error!Echo {
+        var line: [2][]f64 = .{ &.{}, &.{} };
+        errdefer for (line) |l| gpa.free(l);
+        for (&line, shape.delay_s) |*l, seconds| {
+            const frames: usize = @intFromFloat(@max(1, seconds * rate));
+            l.* = try gpa.alloc(f64, frames);
+            @memset(l.*, 0);
+        }
+        return .{
+            .line = line,
+            .pos = .{ 0, 0 },
+            .damping = .{ .init(shape.damping_hz, rate), .init(shape.damping_hz, rate) },
+            .feedback = std.math.clamp(shape.feedback, 0, 0.95),
+            .level = std.math.pow(f64, 10, shape.level_db / 20),
+            .channels = channels,
+        };
+    }
+
+    fn deinit(e: *Echo, gpa: Allocator) void {
+        for (e.line) |l| gpa.free(l);
+        e.* = undefined;
+    }
+
+    /// Add each channel's repeats to it, and feed the dry signal in.
+    fn process(e: *Echo, dry: *[2]f64, channels: u8) void {
+        for (0..channels) |ch| {
+            const tap = e.line[ch][e.pos[ch]];
+            e.line[ch][e.pos[ch]] = dry[ch] + e.damping[ch].step(tap) * e.feedback;
+            e.pos[ch] = (e.pos[ch] + 1) % e.line[ch].len;
+            dry[ch] += tap * e.level;
+        }
+    }
+};
 
 /// One partial.
 const Voice = struct {

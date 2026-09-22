@@ -12,7 +12,8 @@ in almost every scene it cuts to.
 It renders indefinitely and never repeats. There is no sample and no loop
 point: the hum is built back up out of the fifty-six sine partials that a
 recording of it measures, each one wandering slightly in frequency and level
-the way an unregulated motor does.
+the way an unregulated motor does, with the room's ping and pong over the
+top of it.
 
 ```console
 $ wopr | pw-play -
@@ -65,6 +66,61 @@ top four octaves.
 without any modulator. The synthesiser has no tremolo in it, deliberately:
 adding one would be modulating something that already pulses, and it sounds
 like it.
+
+## The ping and the pong
+
+Something in the machine room pings and pongs, in irregular little flurries —
+four inside a second, then nothing for two — and both carry an echo off the
+room. `src/bursts.zig` has them, measured the same way the hum was, and
+`analysis/bursts.py` is how they were found.
+
+Not with a spectrum: they sit 17 dB under the hum and last a tenth of a
+second, so averaged over even one second they are gone. What finds them is
+subtracting each frequency's own median over time from a spectrogram, which
+turns a steady partial grey and leaves anything that *happens* standing out.
+Each burst was then measured against a nearby quiet stretch, twice, against
+two different quiet windows — a component whose level moves when the
+reference window moves is the background, not the burst.
+
+|  | ping | pong |
+| --- | ---: | ---: |
+| fundamental | 1188 Hz | 527 Hz |
+| other partials | 2376 Hz, −24 dB | 822, 978, 1120, 1405 Hz |
+| level under the hum | 19 dB | 17 dB |
+| attack / hold / release | 3 / 72 / 12 ms | 4 / 86 / 28 ms |
+
+The interesting one is the pong. Its partials land at 1.56, 1.86, 2.12 and
+2.66 times its fundamental — nowhere near whole numbers — which is what a
+struck metal object sounds like and is the whole reason it reads as a *pong*
+rather than as a low beep. The ping is very nearly a pure tone: one partial
+24 dB down at twice the fundamental, and nothing else.
+
+Neither is struck-and-decaying, which is the other thing worth knowing
+before changing them. Both are flat-topped: the ping reaches full level
+within 5 ms, holds within 3 dB for 70 ms, and is gone 10 ms later. The
+envelope is a raised cosine at each end rather than a corner, because at
+this level a click would be the only part anybody heard.
+
+**The echo** is one delay line per channel with a little feedback — 205 ms on
+the left, 232 ms on the right, different because a room is not symmetric and
+two equal delays put the repeat in the middle of the head where the dry
+burst already is. The repeats are damped at 2.6 kHz, as they would be off
+real surfaces. The hum does not go through it: a continuous sound convolved
+with its own echo is the same continuous sound very slightly thicker.
+
+`EchoShape.level_db` sets how *loud* the repeat is and `feedback` sets how
+*many* there are, and confusing the two is worth avoiding. The first version
+had 0.42 of feedback, which put a third and fourth repeat 14 and 21 dB down.
+In the recording those are under the noise floor; here, where by default
+there is no floor, they are audible — and the whole thing sounded like it
+was running fast when the burst rate was right.
+
+Rate is `--bursts N`, in bursts a minute, or `off`. The default of 70 is not
+quite a measurement and it is worth saying so: `analysis/bursts.py` counts
+112 a minute in the recording, but it cannot tell a burst from that burst's
+echo 205 ms later, and several of the gaps it reports are about 205 ms.
+Reading those as repeats puts the real figure somewhere between 56 and 90,
+and 70 is where it was left after listening.
 
 ## How close it gets
 
@@ -183,6 +239,7 @@ $ wopr -c 1 -f f32 --raw | ...                  # mono float, no header
 | `-g, --gain DB` | output level in dBFS RMS (default −18) |
 | `-w, --width W` | stereo spread, 0 to 1 (default 0.6) |
 | `-n, --hiss DB` | add a broadband noise floor, in dB under the hum; off by default |
+| `-b, --bursts N` | pings and pongs a minute (default 70), or `off` |
 | `-s, --seed N` | seed the randomness; the default comes from the clock |
 
 An endless WAVE stream declares its length as `0xFFFFFFFF`, which is the
@@ -213,9 +270,9 @@ hum.render(&frames);
 
 `Hum.Options` exposes every number the model has: the partial table itself,
 the drift and shimmer depths and their time constants, the shape and level
-of each noise band, the output level and the microphone spacing that sets
-the stereo width. Each one is documented with what it was measured at and
-why.
+of each noise band, the burst table and how often it fires, the echo, the
+output level and the microphone spacing that sets the stereo width. Each one
+is documented with what it was measured at and why.
 
 The same seed and options give byte-identical output, which is what makes
 `tests/acoustics.zig` possible; the block size the caller happens to use does
@@ -229,12 +286,21 @@ Two scripts, both needing only the devshell:
 $ nix develop -c python3 analysis/partials.py reference/wopr-computer-humming.flac
 $ nix develop -c python3 analysis/measure.py  reference/wopr-computer-humming.flac --from 6 --to 12
 $ nix develop -c python3 analysis/measure.py  hum.wav
+$ nix develop -c python3 analysis/bursts.py   reference/wopr-computer-humming.flac --plot /tmp/spec.png
 ```
 
 `partials.py` prints `src/partials.zig`'s table, and its docstring gives the
 method and the reason for each step of it. `measure.py` prints the numbers in
 the comparison above, for the recording or for a rendering, so the two can be
-held up next to each other and read off the same way.
+held up next to each other and read off the same way. `bursts.py` finds the
+ping and the pong, times them and says what they are made of; `--plot`
+writes the median-subtracted spectrogram that found them in the first place.
+
+One caveat on `bursts.py`, in its output as well as here: a count is not a
+firing rate. It cannot tell a burst from that burst's echo, and it merges
+bursts that overlap, so its count moves with the echo settings and stops
+tracking the rate once the flurries get dense. For finding and measuring the
+bursts it is the right tool; for how often they should arrive, ears.
 
 The recording itself is **not** in this repository. It is a clip of a
 commercial film's soundtrack, and `reference/` is gitignored; the References
@@ -256,8 +322,9 @@ $ reuse lint
 
 `tests/acoustics.zig` is where a claim about the *sound* gets written down: it
 renders seconds of audio and measures the spectrum, the octave balance, the
-channel correlation, the throb rate, the crest factor and the absence of a
-click at a control-block boundary. The tolerances are loose on purpose — they
+channel correlation, the throb rate, the crest factor, the frequencies of the
+ping and the pong, the echo's delay, and the absence of a click at a
+control-block boundary. The tolerances are loose on purpose — they
 are there to catch a *different sound*, not to pin the output bit for bit.
 
 ## Licence

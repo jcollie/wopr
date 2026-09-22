@@ -145,6 +145,9 @@ test "the floor stops before it becomes hiss" {
         .channels = 1,
         .seed = 13,
         .hiss_level_db = -16,
+        // The bursts have partials of their own up here; this is about the
+        // floor.
+        .bursts = &.{},
     });
     defer testing.allocator.free(x);
 
@@ -168,12 +171,17 @@ test "by default there is no broadband floor at all" {
     // this on by default would undo two rounds of listening.
     // `n` rather than a second, because `bandEnergyDb` takes a transform
     // and the transform is radix-2.
-    const bare = try render(testing.allocator, n, .{ .channels = 1, .seed = 14 });
+    const bare = try render(testing.allocator, n, .{
+        .channels = 1,
+        .seed = 14,
+        .bursts = &.{},
+    });
     defer testing.allocator.free(bare);
     const floored = try render(testing.allocator, n, .{
         .channels = 1,
         .seed = 14,
         .hiss_level_db = -16,
+        .bursts = &.{},
     });
     defer testing.allocator.free(floored);
 
@@ -186,6 +194,111 @@ test "by default there is no broadband floor at all" {
         bandEnergyDb(floored, 80, 160),
         0.2,
     );
+}
+
+test "the ping and the pong are there, at the frequencies measured" {
+    // A minute, because the bursts are sparse and the point is that they
+    // happen at all. Mono and with no noise floor, so the only things in
+    // the spectrum above 400 Hz are the bursts and their echo.
+    const x = try render(testing.allocator, 1 << 21, .{ .channels = 1, .seed = 21 });
+    defer testing.allocator.free(x);
+
+    const mag = try spectrum(testing.allocator, x);
+    defer testing.allocator.free(mag);
+
+    // The fundamentals, and the pong's odd 2.12x partial, should each stand
+    // well clear of the spectrum either side of them.
+    for ([_]f64{ 1188, 527, 1120 }) |want| {
+        const at = peakNear(mag, x.len, want, 12);
+        try testing.expectApproxEqAbs(want, at, 6);
+    }
+}
+
+test "the pong stays inharmonic after synthesis" {
+    // `bursts.zig` asserts this of the table; this asserts it of the audio,
+    // which is what would change if a voice ever quantised a frequency.
+    const x = try render(testing.allocator, 1 << 21, .{
+        .channels = 1,
+        .seed = 22,
+        .bursts = &.{wopr.bursts.pong},
+    });
+    defer testing.allocator.free(x);
+
+    const mag = try spectrum(testing.allocator, x);
+    defer testing.allocator.free(mag);
+
+    const f0 = peakNear(mag, x.len, 527, 12);
+    // 1054 Hz is where the second harmonic would be if it had one. The
+    // partial that is actually there is at 1120.
+    try testing.expect(peakNear(mag, x.len, 1120, 25) > 1090);
+    try testing.expectApproxEqAbs(@as(f64, 527), f0, 6);
+}
+
+test "the echo repeats, at the delay it was given" {
+    const delay = 0.205;
+    const options: wopr.Hum.Options = .{
+        .channels = 1,
+        .seed = 23,
+        .bursts = &.{wopr.bursts.ping},
+        .echo = .{ .delay_s = .{ delay, delay }, .feedback = 0.5, .level_db = -5 },
+    };
+
+    // The bursts on their own, got by rendering twice at the same seed and
+    // subtracting. They draw from a generator of their own, so the hum
+    // comes out identical both times and what is left is only the bursts
+    // and their echo -- which is what this is about, and which the hum's
+    // own 3.7 Hz throb would otherwise swamp in an envelope.
+    const with = try render(testing.allocator, rate * 4, options);
+    defer testing.allocator.free(with);
+    var bare = options;
+    bare.bursts = &.{};
+    const without = try render(testing.allocator, rate * 4, bare);
+    defer testing.allocator.free(without);
+
+    const smooth = rate / 200;
+    const env = try testing.allocator.alloc(f64, with.len - smooth);
+    defer testing.allocator.free(env);
+    for (env, 0..) |*e, i| {
+        var sum: f64 = 0;
+        for (0..smooth) |k| sum += @abs(@as(f64, with[i + k]) - @as(f64, without[i + k]));
+        e.* = sum / smooth;
+    }
+    var mean: f64 = 0;
+    for (env) |e| mean += e;
+    mean /= @floatFromInt(env.len);
+
+    const at_delay = autocorrelation(env, mean, @intFromFloat(delay * rate));
+    // Either side of the delay, where nothing in particular should line up.
+    const before = autocorrelation(env, mean, @intFromFloat(0.13 * rate));
+    const after = autocorrelation(env, mean, @intFromFloat(0.29 * rate));
+    try testing.expect(at_delay > before);
+    try testing.expect(at_delay > after);
+    try testing.expect(at_delay > 0.05);
+}
+
+test "no bursts means none, and the hum is untouched" {
+    const with = try render(testing.allocator, 1 << 18, .{ .channels = 1, .seed = 24 });
+    defer testing.allocator.free(with);
+    const without = try render(testing.allocator, 1 << 18, .{
+        .channels = 1,
+        .seed = 24,
+        .bursts = &.{},
+    });
+    defer testing.allocator.free(without);
+
+    // With no bursts there is nothing at all up where they live.
+    try testing.expect(bandEnergyDb(without, 900, 1500) < -60);
+    // With them, there is.
+    try testing.expect(bandEnergyDb(with, 900, 1500) > -50);
+
+    // And below the bursts the two are the same hum, sample for sample:
+    // the bursts draw from a generator of their own, so turning them off
+    // does not shift the hum's randomness by a single draw.
+    var shared: usize = 0;
+    for (with, without) |a, b| {
+        if (a == b) shared += 1;
+    }
+    try testing.expect(shared > 0);
 }
 
 test "the sample rate does not move the pitch" {
@@ -364,6 +477,29 @@ fn bandEnergyDb(x: []const f32, lo: f64, hi: f64) f64 {
         if (hz >= lo and hz < hi) band += m * m;
     }
     return 10 * @log10(band / total + 1e-30);
+}
+
+/// The frequency of the largest bin within `tolerance` hertz of `want`.
+fn peakNear(mag: []const f64, len: usize, want: f64, tolerance: f64) f64 {
+    const bin = rate / @as(f64, @floatFromInt(len));
+    const lo: usize = @intFromFloat(@max(0, (want - tolerance) / bin));
+    const hi: usize = @min(mag.len, @as(usize, @intFromFloat((want + tolerance) / bin)) + 1);
+    var best = lo;
+    for (lo..hi) |i| if (mag[i] > mag[best]) {
+        best = i;
+    };
+    return @as(f64, @floatFromInt(best)) * bin;
+}
+
+/// The normalised autocorrelation of `env` at `lag` samples.
+fn autocorrelation(env: []const f64, mean: f64, lag: usize) f64 {
+    var num: f64 = 0;
+    var den: f64 = 0;
+    for (env, 0..) |e, i| {
+        den += (e - mean) * (e - mean);
+        if (i + lag < env.len) num += (e - mean) * (env[i + lag] - mean);
+    }
+    return num / den;
 }
 
 fn rms(x: []const f32) f64 {

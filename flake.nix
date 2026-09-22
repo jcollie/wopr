@@ -56,12 +56,14 @@
               pkgs.pinact
               pkgs.reuse
 
-              # What the analysis in `analysis/` was done with, and what
-              # `analysis/compare.py` needs to check a rendering back against
-              # the reference recording.
+              # What the scripts in `analysis/` need: ffmpeg to decode
+              # whatever they are pointed at, and matplotlib for the
+              # spectrogram in `bursts.py` -- which is not decoration, it is
+              # how the ping and the pong were found.
               pkgs.ffmpeg
               (pkgs.python3.withPackages (
                 python-pkgs: with python-pkgs; [
+                  matplotlib
                   numpy
                   scipy
                 ]

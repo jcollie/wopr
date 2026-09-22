@@ -47,6 +47,8 @@ const usage =
     \\  -w, --width W         stereo spread, 0 to 1 (default 0.6)
     \\  -n, --hiss DB         add a broadband noise floor, in dB under the hum;
     \\                        off by default, because a room has one already
+    \\  -b, --bursts N        pings and pongs per minute (default 70);
+    \\                        "off" for a hum with nothing over it
     \\  -s, --seed N          seed the randomness (default: from the clock)
     \\  -h, --help            print this and stop
     \\  -V, --version         print the version and stop
@@ -113,6 +115,13 @@ pub fn main(init: std.process.Init) !void {
         .level_dbfs = config.gain_db,
         .width = config.width,
         .hiss_level_db = config.hiss_db,
+        .bursts = if (config.bursts_per_minute) |n|
+            if (n == 0) &.{} else defaults.bursts
+        else
+            defaults.bursts,
+        // Left alone unless asked, so that the default rate lives in one
+        // place -- `bursts.Timing` -- rather than being restated here.
+        .timing = if (config.bursts_per_minute) |n| .{ .per_minute = n } else .{},
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         // The partial table is fixed and well inside any sample rate a
@@ -122,7 +131,9 @@ pub fn main(init: std.process.Init) !void {
             try stderr.flush();
             std.process.exit(2);
         },
-        error.UnsupportedChannelCount, error.NoPartials => unreachable,
+        // All three come from tables that are compiled in, and the command
+        // line cannot reach any of them.
+        error.UnsupportedChannelCount, error.NoPartials, error.BadBurst, error.BadEchoDelay => unreachable,
     };
     defer hum.deinit(gpa);
 
@@ -194,6 +205,8 @@ const Config = struct {
     gain_db: f64 = defaults.level_dbfs,
     width: f64 = defaults.width,
     hiss_db: ?f64 = defaults.hiss_level_db,
+    /// `null` means the measured rate; 0 means none at all.
+    bursts_per_minute: ?f64 = null,
     seed: ?u64 = null,
 };
 
@@ -209,6 +222,7 @@ const ParseError = error{
     BadWidth,
     BadGain,
     BadHiss,
+    BadBurstRate,
 };
 
 fn describe(err: ParseError) []const u8 {
@@ -224,6 +238,7 @@ fn describe(err: ParseError) []const u8 {
         error.BadWidth => "width must be between 0 and 1",
         error.BadGain => "gain must be between -120 and 0 dBFS",
         error.BadHiss => "hiss must be between -120 and 0 dB, or \"off\"",
+        error.BadBurstRate => "bursts must be between 0 and 3600 a minute, or \"off\"",
     };
 }
 
@@ -309,6 +324,15 @@ fn parse(args: []const []const u8) ParseError!Config {
                 if (!(db >= -120 and db <= 0)) return error.BadHiss;
                 config.hiss_db = db;
             }
+        } else if (is(name, "-b", "--bursts")) {
+            const v = try Value.next(inline_value, args, &i);
+            if (std.mem.eql(u8, v, "off")) {
+                config.bursts_per_minute = 0;
+            } else {
+                const n = std.fmt.parseFloat(f64, v) catch return error.BadNumber;
+                if (!(n >= 0 and n <= 3600)) return error.BadBurstRate;
+                config.bursts_per_minute = n;
+            }
         } else if (is(name, "-s", "--seed")) {
             const v = try Value.next(inline_value, args, &i);
             config.seed = std.fmt.parseInt(u64, v, 0) catch return error.BadNumber;
@@ -374,6 +398,17 @@ test "the noise floor is off unless a level is given" {
     try testing.expectEqual(@as(?f64, null), (try parse(&.{ "--hiss", "off" })).hiss_db);
     try testing.expectError(error.BadHiss, parse(&.{ "--hiss", "6" }));
     try testing.expectError(error.BadNumber, parse(&.{ "--hiss", "quiet" }));
+}
+
+test "the bursts can be thinned out or switched off" {
+    try testing.expectEqual(@as(?f64, null), (try parse(&.{})).bursts_per_minute);
+    try testing.expectEqual(@as(?f64, 20), (try parse(&.{ "--bursts", "20" })).bursts_per_minute);
+    try testing.expectEqual(@as(?f64, 20), (try parse(&.{ "-b", "20" })).bursts_per_minute);
+    // Zero rather than null, so that "off" is distinguishable from "as
+    // measured" and can empty the burst table rather than dividing by it.
+    try testing.expectEqual(@as(?f64, 0), (try parse(&.{ "--bursts", "off" })).bursts_per_minute);
+    try testing.expectError(error.BadBurstRate, parse(&.{ "--bursts", "-4" }));
+    try testing.expectError(error.BadNumber, parse(&.{ "--bursts", "lots" }));
 }
 
 test "a seed may be given in hexadecimal" {
