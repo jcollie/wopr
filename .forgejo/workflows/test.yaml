@@ -14,29 +14,29 @@ jobs:
       - name: Check out
         uses: https://code.forgejo.org/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # The Zig dependency set, realised from `build.zig.zon.nix`, so that
-      # the steps below build against the store rather than fetching from a
-      # forge in the middle of a test run.
-      - name: Fetch the Zig dependencies
-        run: echo "ZIG_DEPS=$(nix build --print-out-paths .#zig-deps)" >> "$FORGE_ENV"
-
       - name: Check REUSE compliance
         run: nix develop -c reuse lint
 
       - name: Check Zig formatting compliance
         run: nix develop -c zig fmt --check .
 
+      # `--system` points Zig at the dependency set realised from
+      # `build.zig.zon.nix`, so these build against the store rather than
+      # fetching from a forge in the middle of a test run. Recomputed per
+      # step rather than carried in an environment file: `nix build` costs
+      # nothing once the path is there, and the name of the file a Forgejo
+      # runner exports for that is not something to depend on.
       - name: Test
-        run: nix develop -c zig build test --summary all --system "$ZIG_DEPS"
+        run: nix develop -c zig build test --summary all --system "$(nix build --print-out-paths .#zig-deps)"
 
       - name: Build
-        run: nix develop -c zig build --system "$ZIG_DEPS"
+        run: nix develop -c zig build --system "$(nix build --print-out-paths .#zig-deps)"
 
       # Nothing else builds the documentation server or the stand-in for the
       # PipeWire module, so without this either could stop compiling and the
       # test step would not notice.
       - name: Build everything that is not built by the steps above
-        run: nix develop -c zig build check --system "$ZIG_DEPS"
+        run: nix develop -c zig build check --system "$(nix build --print-out-paths .#zig-deps)"
 
       # The package builds in the Nix sandbox, which has no network at all:
       # if `build.zig.zon.nix` has drifted from `build.zig.zon`, this is
