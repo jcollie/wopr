@@ -135,10 +135,17 @@ test "the floor stops before it becomes hiss" {
     // continuing down -- and a band total, dominated by the octave below it,
     // shows nothing at all wrong.
     //
-    // So this asserts the top of the spectrum on its own terms. The
-    // recording has essentially nothing above 4 kHz: its 5-10 kHz octave
-    // measures 59 dB under the total and its 10-20 kHz octave 67 dB under.
-    const x = try render(testing.allocator, n, .{ .channels = 1, .seed = 13 });
+    // So this asserts the top of the spectrum on its own terms -- and with
+    // the floor turned *on*, at the level that matches the recording, since
+    // the default is off and would pass this without exercising a single
+    // filter. The recording has essentially nothing above 4 kHz: its
+    // 5-10 kHz octave measures 59 dB under the total and its 10-20 kHz
+    // octave 67 dB under.
+    const x = try render(testing.allocator, n, .{
+        .channels = 1,
+        .seed = 13,
+        .hiss_level_db = -16,
+    });
     defer testing.allocator.free(x);
 
     const mag = try spectrum(testing.allocator, x);
@@ -153,6 +160,32 @@ test "the floor stops before it becomes hiss" {
         if (hz >= 4000) above += e;
     }
     try testing.expect(10 * @log10(above / total) < -55);
+}
+
+test "by default there is no broadband floor at all" {
+    // Not a tuning choice that drifted: a room the hum plays in has a floor
+    // of its own, and a second one on top of it is heard as hiss. Turning
+    // this on by default would undo two rounds of listening.
+    // `n` rather than a second, because `bandEnergyDb` takes a transform
+    // and the transform is radix-2.
+    const bare = try render(testing.allocator, n, .{ .channels = 1, .seed = 14 });
+    defer testing.allocator.free(bare);
+    const floored = try render(testing.allocator, n, .{
+        .channels = 1,
+        .seed = 14,
+        .hiss_level_db = -16,
+    });
+    defer testing.allocator.free(floored);
+
+    // The floor is audible in the measurement when it is asked for, and the
+    // hum underneath is the same hum either way.
+    try testing.expect(bandEnergyDb(bare, 400, 2000) < -50);
+    try testing.expect(bandEnergyDb(floored, 400, 2000) > -30);
+    try testing.expectApproxEqAbs(
+        bandEnergyDb(bare, 80, 160),
+        bandEnergyDb(floored, 80, 160),
+        0.2,
+    );
 }
 
 test "the sample rate does not move the pitch" {
@@ -317,6 +350,21 @@ test "a sample rate with nowhere to put the partials is refused" {
 }
 
 // -- measurement ------------------------------------------------------------
+
+/// The energy between `lo` and `hi` hertz, in dB relative to the whole
+/// signal's. `x.len` must be a power of two.
+fn bandEnergyDb(x: []const f32, lo: f64, hi: f64) f64 {
+    const mag = spectrum(testing.allocator, x) catch @panic("out of memory");
+    defer testing.allocator.free(mag);
+    var total: f64 = 0;
+    var band: f64 = 0;
+    for (mag, 0..) |m, i| {
+        const hz = @as(f64, @floatFromInt(i)) * rate / @as(f64, @floatFromInt(x.len));
+        total += m * m;
+        if (hz >= lo and hz < hi) band += m * m;
+    }
+    return 10 * @log10(band / total + 1e-30);
+}
 
 fn rms(x: []const f32) f64 {
     var sum: f64 = 0;

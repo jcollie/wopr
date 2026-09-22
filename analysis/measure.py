@@ -23,6 +23,23 @@ import numpy as np
 from scipy.io import wavfile
 from scipy.signal import welch
 
+
+def a_weighting(f):
+    """IEC 61672 A-weighting, in dB, for an array of frequencies.
+
+    Here because loudness is the question a hiss complaint asks and energy is
+    not: the ear is roughly 20 dB more sensitive at 3 kHz than at 125 Hz, so
+    a floor that measures 30 dB below the hum can still be the first thing
+    anybody hears.
+    """
+    f = np.maximum(f, 1.0)
+    f2 = f * f
+    ra = ((12194.0**2 * f2**2)
+          / ((f2 + 20.6**2)
+             * np.sqrt((f2 + 107.7**2) * (f2 + 737.9**2))
+             * (f2 + 12194.0**2)))
+    return 20 * np.log10(ra) + 2.0
+
 RATE = 44100
 
 
@@ -78,6 +95,15 @@ def main():
         m = (f >= lo) & (f < hi)
         e = np.trapezoid(p[m], f[m])
         print(f"  {lo:6d}-{hi:<6d} {10 * np.log10(e / total + 1e-20):7.2f} dB  {100 * e / total:6.2f}%")
+
+    # How loud the part above the hum is, A-weighted. This is the number a
+    # "there is a hiss" report is about, and the one an octave band table
+    # does not show: it weights 2-6 kHz roughly 20 dB above the hum's own
+    # octave, which is what the ear does.
+    above = f >= 400
+    aw = 10 ** (a_weighting(f) / 10)
+    hiss = np.trapezoid(p[above] * aw[above], f[above])
+    print(f"hiss, A-wtd    {10 * np.log10(hiss / total):7.2f} dB  (>=400 Hz, relative to total energy)")
 
     # The strongest partial. The reference peaks at 124.94 Hz.
     band = (f > 80) & (f < 160)

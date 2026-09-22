@@ -76,18 +76,29 @@ pub const Options = struct {
     /// format without a limiter in the way.
     level_dbfs: f64 = -18.0,
 
-    /// The broadband floor under the hum, in dB relative to the tonal part.
-    hiss_level_db: f64 = -18.5,
-
-    /// The shape of that floor.
+    /// The broadband floor under the hum, in dB relative to the tonal part,
+    /// or `null` for no floor at all. `null` is the default.
     ///
-    /// Fitted to the recording's own floor between 250 Hz and 2.5 kHz, which
-    /// it follows to within about 3 dB. Above 2.5 kHz the recording is not
-    /// showing its machine room any more -- it is showing what a lossy
-    /// encoder left behind, a bump at 3 kHz and a cliff above 4 -- so the
-    /// fit was constrained to stay *under* the recording there rather than
-    /// to match it.
-    hiss: BandShape = .{ .high_hz = 90, .tilt_hz = 150, .cutoff_hz = 2600 },
+    /// The recording has such a floor and this can reproduce it, but off is
+    /// the better default and the reason is not acoustics. A room already
+    /// has a floor -- fans, traffic, the building -- and a synthesiser that
+    /// runs for hours as a background bed is heard *in* that room, not
+    /// instead of it. Adding a second one only ever puts a steady, smooth
+    /// hiss on top of the listener's own, which is the one thing here that
+    /// people notice and dislike; the partials do not need it to sound like
+    /// a machine.
+    ///
+    /// Turn it on with a level if the hum is going somewhere that has no
+    /// floor of its own -- under dialogue in a dry mix, say. -28 dB is
+    /// present without being audible as hiss; -16 dB matches the recording.
+    hiss_level_db: ?f64 = null,
+
+    /// The shape of that floor, when there is one.
+    ///
+    /// Fitted to the recording's own floor between 50 Hz and 800 Hz, which
+    /// it follows to within 2 dB, and held well under it above 1 kHz.
+    /// `BandShape` says why the fit is split that way.
+    hiss: BandShape = .{ .high_hz = 160, .tilt_hz = 200, .cutoff_hz = 1000 },
 
     /// Rumble, in dB relative to the tonal part: the room and the air
     /// handling under everything else.
@@ -97,7 +108,7 @@ pub const Options = struct {
     /// absent -- so a synthesiser with a generous bottom end would be a
     /// different and less convincing sound however good it felt on a
     /// subwoofer.
-    rumble_level_db: f64 = -34.0,
+    rumble_level_db: f64 = -42,
 
     /// The shape of the rumble: a band rather than everything below a
     /// cutoff, because the recording falls away below 40 Hz as steeply as it
@@ -161,24 +172,36 @@ pub const Partial = partials.Partial;
 ///
 /// Three stages, because the floor has to do two different things. Through
 /// the mid-band it has to *tilt*, following the recording's own slope, and a
-/// single pole does that. Above the band it has to actually stop, and a
-/// cascade of one-poles does not: a one-pole digital lowpass flattens out
+/// pair of one-poles does that. Above the band it has to actually stop, and
+/// a cascade of one-poles does not: a one-pole digital lowpass flattens out
 /// towards Nyquist at `(1-a)/(1+a)`, so a corner low enough to shape this
 /// floor leaves a broadband tail only about 30 dB down per pole. Two
-/// Butterworth biquads have a zero at Nyquist and keep falling, which is
-/// what puts the top of the band 40 dB further down than the tilt alone
-/// would.
+/// Butterworth biquads have a double zero at Nyquist and keep falling,
+/// which is what lets the band actually end.
 ///
-/// This is not a detail. An earlier version shaped the hiss with two
-/// one-poles, matched the recording's octave band energies to within 2 dB
-/// everywhere below 1 kHz, and still had an audible hiss at 4 to 8 kHz --
-/// where the ear is at its most sensitive and where a band total, dominated
-/// by the octave below it, showed nothing wrong.
+/// None of this is a detail, and two rounds of listening went into the
+/// numbers. A version shaped with two one-poles alone matched the
+/// recording's octave band energies to within 2 dB everywhere below 1 kHz
+/// and hissed audibly at 4 to 8 kHz -- where the ear is at its most
+/// sensitive, and where a band total, dominated by the octave below it,
+/// showed nothing wrong. Adding the biquads at 2.6 kHz fixed that and left
+/// a quieter hiss still, this time because a *smooth, steady* floor at
+/// 1 to 3 kHz is heard as hiss whatever its level: the recording's content
+/// up there has a spectral flatness of 0.11 to 0.33 at its peaks and swings
+/// 27 dB from frame to frame, because it is discrete and intermittent
+/// rather than a floor at all. Matching its energy there with smooth noise
+/// matches the measurement and not the sound.
+///
+/// So the corners below are fitted to the recording between 200 Hz and
+/// 800 Hz, where it really does have a floor and where the floor's audible
+/// job is -- filling in between the partials so the hum sounds like a room
+/// -- and constrained to stay well under the recording above 1 kHz rather
+/// than to match it.
 pub const BandShape = struct {
-    /// A one-pole highpass: the floor stops below the hum rather than
-    /// continuing down to DC.
+    /// Two one-pole highpasses: the floor stops below the hum rather than
+    /// continuing down to DC, and stops as steeply as the recording does.
     high_hz: f64,
-    /// A one-pole lowpass, which sets the slope through the mid-band.
+    /// Two one-pole lowpasses, which set the slope through the mid-band.
     tilt_hz: f64,
     /// Two Butterworth biquads, which end the band.
     cutoff_hz: f64,
@@ -301,7 +324,7 @@ pub fn init(gpa: Allocator, options: Options) InitError!Hum {
         .sample_rate = rate,
         .channels = options.channels,
         .gain = level * shimmer_bias / tonal_rms,
-        .hiss_gain = tonal_rms * std.math.pow(f64, 10, options.hiss_level_db / 20),
+        .hiss_gain = if (options.hiss_level_db) |db| tonal_rms * std.math.pow(f64, 10, db / 20) else 0,
         .rumble_gain = tonal_rms * std.math.pow(f64, 10, options.rumble_level_db / 20),
         .noise_spread = if (options.channels == 1) 0 else width,
     };
@@ -466,7 +489,11 @@ const NoiseFloor = struct {
         // independent of how many partials there are, so adding one does not
         // change the hiss.
         const rng = f.rng.random();
-        return f.hiss.next(rng) * hiss_gain + f.rumble.next(rng) * rumble_gain;
+        // Skipped rather than multiplied by zero when the hiss is off, which
+        // is the default: six filter stages a sample, per channel, for a
+        // signal nobody asked for.
+        const hiss = if (hiss_gain != 0) f.hiss.next(rng) * hiss_gain else 0;
+        return hiss + f.rumble.next(rng) * rumble_gain;
     }
 };
 
@@ -476,8 +503,8 @@ const NoiseFloor = struct {
 /// re-tune the level: a `_level_db` option means the same loudness whatever
 /// band it is spread across.
 const Band = struct {
-    high: OnePole,
-    tilt: OnePole,
+    high: [2]OnePole,
+    tilt: [2]OnePole,
     top: [2]Biquad,
     scale: f64,
 
@@ -486,8 +513,8 @@ const Band = struct {
         const tilt: OnePole = .init(shape.tilt_hz, rate);
         const top: Biquad = .lowpass(shape.cutoff_hz, rate);
         return .{
-            .high = high,
-            .tilt = tilt,
+            .high = @splat(high),
+            .tilt = @splat(tilt),
             .top = @splat(top),
             .scale = 1 / responseRms(high, tilt, top),
         };
@@ -496,8 +523,8 @@ const Band = struct {
     fn next(b: *Band, rng: std.Random) f64 {
         var v = rng.floatNorm(f64) * b.scale;
         // A one-pole highpass is what the matching lowpass does not pass.
-        v -= b.high.step(v);
-        v = b.tilt.step(v);
+        for (&b.high) |*p| v -= p.step(v);
+        for (&b.tilt) |*p| v = p.step(v);
         for (&b.top) |*q| v = q.step(v);
         return v;
     }
@@ -512,9 +539,10 @@ const Band = struct {
         var sum: f64 = 0;
         for (0..steps) |i| {
             const w = std.math.pi * (@as(f64, @floatFromInt(i)) + 0.5) / steps;
-            const power = high.highpassPower(w) * tilt.lowpassPower(w);
-            const one = top.power(w);
-            sum += power * one * one;
+            const highed = high.highpassPower(w);
+            const tilted = tilt.lowpassPower(w);
+            const topped = top.power(w);
+            sum += highed * highed * tilted * tilted * topped * topped;
         }
         return @sqrt(sum / steps);
     }

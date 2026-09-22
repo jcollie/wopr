@@ -45,6 +45,8 @@ const usage =
     \\      --raw             headerless PCM rather than a WAVE stream
     \\  -g, --gain DB         output level in dBFS RMS (default -18)
     \\  -w, --width W         stereo spread, 0 to 1 (default 0.6)
+    \\  -n, --hiss DB         add a broadband noise floor, in dB under the hum;
+    \\                        off by default, because a room has one already
     \\  -s, --seed N          seed the randomness (default: from the clock)
     \\  -h, --help            print this and stop
     \\  -V, --version         print the version and stop
@@ -110,6 +112,7 @@ pub fn main(init: std.process.Init) !void {
         .seed = seed,
         .level_dbfs = config.gain_db,
         .width = config.width,
+        .hiss_level_db = config.hiss_db,
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         // The partial table is fixed and well inside any sample rate a
@@ -190,6 +193,7 @@ const Config = struct {
     raw: bool = false,
     gain_db: f64 = defaults.level_dbfs,
     width: f64 = defaults.width,
+    hiss_db: ?f64 = defaults.hiss_level_db,
     seed: ?u64 = null,
 };
 
@@ -204,6 +208,7 @@ const ParseError = error{
     BadDuration,
     BadWidth,
     BadGain,
+    BadHiss,
 };
 
 fn describe(err: ParseError) []const u8 {
@@ -218,6 +223,7 @@ fn describe(err: ParseError) []const u8 {
         error.BadDuration => "duration must be a positive number of seconds",
         error.BadWidth => "width must be between 0 and 1",
         error.BadGain => "gain must be between -120 and 0 dBFS",
+        error.BadHiss => "hiss must be between -120 and 0 dB, or \"off\"",
     };
 }
 
@@ -294,6 +300,15 @@ fn parse(args: []const []const u8) ParseError!Config {
             const w = std.fmt.parseFloat(f64, v) catch return error.BadNumber;
             if (!(w >= 0 and w <= 1)) return error.BadWidth;
             config.width = w;
+        } else if (is(name, "-n", "--hiss")) {
+            const v = try Value.next(inline_value, args, &i);
+            if (std.mem.eql(u8, v, "off")) {
+                config.hiss_db = null;
+            } else {
+                const db = std.fmt.parseFloat(f64, v) catch return error.BadNumber;
+                if (!(db >= -120 and db <= 0)) return error.BadHiss;
+                config.hiss_db = db;
+            }
         } else if (is(name, "-s", "--seed")) {
             const v = try Value.next(inline_value, args, &i);
             config.seed = std.fmt.parseInt(u64, v, 0) catch return error.BadNumber;
@@ -349,6 +364,16 @@ test "short options and their long spellings agree" {
     try testing.expectEqualDeep(short, long);
     try testing.expectEqual(@as(?u64, 7), short.seed);
     try testing.expectEqual(@as(f64, -24), short.gain_db);
+}
+
+test "the noise floor is off unless a level is given" {
+    try testing.expectEqual(@as(?f64, null), (try parse(&.{})).hiss_db);
+    try testing.expectEqual(@as(?f64, -24), (try parse(&.{ "--hiss", "-24" })).hiss_db);
+    try testing.expectEqual(@as(?f64, -24), (try parse(&.{ "-n", "-24" })).hiss_db);
+    // "off" spells the default out, for a script that wants to be explicit.
+    try testing.expectEqual(@as(?f64, null), (try parse(&.{ "--hiss", "off" })).hiss_db);
+    try testing.expectError(error.BadHiss, parse(&.{ "--hiss", "6" }));
+    try testing.expectError(error.BadNumber, parse(&.{ "--hiss", "quiet" }));
 }
 
 test "a seed may be given in hexadecimal" {

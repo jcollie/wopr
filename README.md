@@ -12,7 +12,7 @@ in almost every scene it cuts to.
 It renders indefinitely and never repeats. There is no sample and no loop
 point: the hum is built back up out of the fifty-six sine partials that a
 recording of it measures, each one wandering slightly in frequency and level
-the way an unregulated motor does, over a floor of shaped noise.
+the way an unregulated motor does.
 
 ```console
 $ wopr | pw-play -
@@ -69,36 +69,40 @@ like it.
 ## How close it gets
 
 Left is the reference recording over its steady stretch, 6.0 s to 12.0 s.
-Right is twenty seconds of `wopr -s 42`. Both measured by
-`analysis/measure.py`.
+Then twenty seconds of `wopr -s 42`, at the default and with the optional
+noise floor turned on. All measured by `analysis/measure.py`.
 
-| | recording | `wopr` |
-| --- | ---: | ---: |
-| strongest partial | 125.16 Hz | 125.16 Hz |
-| energy in 80–160 Hz | 98.08% | 98.77% |
-| 160–315 Hz | −19.24 dB | −21.85 dB |
-| 315–630 Hz | −24.23 dB | −26.08 dB |
-| 630–1250 Hz | −29.08 dB | −28.81 dB |
-| 1250–2500 Hz | −33.58 dB | −33.01 dB |
-| 5–10 kHz | −59.23 dB | −68.32 dB |
-| channel correlation | 0.971 | 0.967 |
-| crest factor | 11.28 dB | 10.94 dB |
-| level drift, ½ s to ½ s | 1.20 dB sd | 0.91 dB sd |
-| throb depth | 0.542 | 0.457 |
+| | recording | `wopr` | `wopr --hiss -16` |
+| --- | ---: | ---: | ---: |
+| strongest partial | 125.16 Hz | 125.16 Hz | 125.16 Hz |
+| energy in 80–160 Hz | 98.08% | 99.65% | 98.11% |
+| 20–40 Hz | −46.31 dB | −51.67 dB | −46.08 dB |
+| 40–80 Hz | −29.78 dB | −45.51 dB | −33.10 dB |
+| 160–315 Hz | −19.24 dB | −24.87 dB | −19.02 dB |
+| 315–630 Hz | −24.23 dB | −58.93 dB | −23.02 dB |
+| 630–1250 Hz | −29.08 dB | −74.59 dB | −32.49 dB |
+| 1250–2500 Hz | −33.58 dB | −83.32 dB | −52.70 dB |
+| noise floor, A-weighted | −24.98 dB | −66.59 dB | −28.08 dB |
+| channel correlation | 0.971 | 0.971 | 0.963 |
+| crest factor | 11.28 dB | 10.55 dB | 10.90 dB |
+| level drift, ½ s to ½ s | 1.20 dB sd | 0.91 dB sd | 0.91 dB sd |
+| throb depth | 0.542 | 0.461 | 0.455 |
 
-Three of those are deliberately not matched, and it is worth saying which.
+The tonal part — which is to say the hum — matches closely and is the same
+in both `wopr` columns. What the middle one leaves out is the recording's
+broadband floor, which is off by default; the next section is why.
+
+Of the rest, three differences are deliberate.
 
 * **Level.** The recording is normalised to full scale, peaking at −0.08 dBFS.
   `wopr` defaults to −18 dBFS RMS, which peaks around −7 and leaves room for
   whatever it is mixed under. `--gain` moves it.
 * **Above 2.5 kHz.** The recording has a bump at 3 kHz and a cliff above
   4 kHz, which is what a lossy encoder leaves behind rather than anything the
-  machine room did. The noise floor is fitted to the recording between 250 Hz
-  and 2.5 kHz, where it follows it to within about 3 dB, and constrained to
-  stay *under* it above that.
+  machine room did. Nothing here reproduces it.
 * **Channel balance.** The recording's left channel is 1.6 dB above its
   right, which is why its side channel measures 16.4 dB under its mid where
-  `wopr` measures 18.5 at the same correlation. That is a property of how the
+  `wopr` measures 18.3 at the same correlation. That is a property of how the
   recording was made; reproducing it would mean shipping a lopsided mix.
 
 The throb comes out a little shallower than the recording's. The beating is
@@ -106,24 +110,44 @@ there and at the right rate — that is what `tests/acoustics.zig` pins — but
 the recording's six second window also carries a slow swell that a twenty
 second render averages away.
 
-### A note on the top two octaves
+## The noise floor, and why it is off
 
-The noise floor is shaped by a one-pole highpass, a one-pole lowpass that
-sets its tilt, and then **two Butterworth biquads** that end it. The biquads
-are there for a reason worth knowing before anyone simplifies them away.
+The recording has a broadband floor under the hum, `wopr` can reproduce it
+to within 2 dB from 50 Hz to 800 Hz, and it does not do so unless asked. Two
+rounds of listening got it there, and both are worth writing down, because
+each is a way of being wrong that the measurements happily called right.
 
-A cascade of one-pole lowpasses has no stopband. Its response flattens out
-towards Nyquist at `(1-a)/(1+a)`, so a corner low enough to shape a floor
-like this one leaves a broadband tail only about 30 dB down per pole — and
-the narrow band then needs 20 dB of make-up gain to come back to the level
-asked for. An earlier version shaped the hiss that way, matched every octave
-band below 1 kHz to within 2 dB, and hissed audibly at 4–8 kHz like air
-coming out of a duct. Nothing in the octave table showed it: each of those
-bands is dominated by the octave below, and the ear is not.
+**A cascade of one-pole lowpasses has no stopband.** Its response flattens
+out towards Nyquist at `(1-a)/(1+a)`, about 30 dB down per pole, and a band
+narrow enough to shape a floor like this then needs 20 dB of make-up gain to
+reach the level asked for. The first version was shaped that way: it matched
+every octave band below 1 kHz to within 2 dB and hissed audibly at 4–8 kHz,
+where the ear is at its most sensitive and where a band total, dominated by
+the octave beneath it, shows nothing at all. Two Butterworth biquads have a
+double zero at Nyquist and keep falling, which fixed it.
 
-A biquad has a double zero at Nyquist, so its stopband keeps going down.
-`tests/acoustics.zig` now asserts the energy above 4 kHz on its own terms
-rather than trusting a band total to reveal it.
+**A smooth, steady floor is heard as hiss whatever its level.** With the
+stopband sorted there was still a quieter one, and the reason is character
+rather than energy. Measured in third-octaves, the recording's content above
+1 kHz has a spectral flatness of 0.11 to 0.33 at its peaks and swings 27 dB
+from frame to frame: it is discrete and intermittent, not a floor at all.
+Synthetic noise is flatness 0.98 and holds within 1 dB. Matching the
+recording's energy up there with smooth noise matches the measurement and
+not the sound, so the fit is now against 50 Hz to 800 Hz — where the
+recording really does have a floor — and constrained to stay well under it
+above 1 kHz.
+
+**And then off entirely.** What settled it is not acoustics. A room already
+has a floor — fans, traffic, the building — and something that runs for
+hours as a background bed is heard *in* that room rather than instead of it.
+A second floor on top of the listener's own is the one thing here that
+people notice and dislike, and the partials do not need it to sound like a
+machine. `--hiss -28` is present without being audible as hiss; `--hiss -16`
+is the recording's own floor, for a dry mix that has none of its own.
+
+`analysis/measure.py` reports the floor A-weighted as well as by octave,
+because loudness is the question a hiss complaint asks and energy is not:
+the ear is roughly 20 dB more sensitive at 3 kHz than at 125 Hz.
 
 ## Using it
 
@@ -158,6 +182,7 @@ $ wopr -c 1 -f f32 --raw | ...                  # mono float, no header
 | `--raw` | headerless PCM rather than a WAVE stream |
 | `-g, --gain DB` | output level in dBFS RMS (default −18) |
 | `-w, --width W` | stereo spread, 0 to 1 (default 0.6) |
+| `-n, --hiss DB` | add a broadband noise floor, in dB under the hum; off by default |
 | `-s, --seed N` | seed the randomness; the default comes from the clock |
 
 An endless WAVE stream declares its length as `0xFFFFFFFF`, which is the
@@ -187,9 +212,10 @@ hum.render(&frames);
 ```
 
 `Hum.Options` exposes every number the model has: the partial table itself,
-the drift and shimmer depths and their time constants, the two noise bands,
-the output level and the microphone spacing that sets the stereo width. Each
-one is documented with what it was measured at and why.
+the drift and shimmer depths and their time constants, the shape and level
+of each noise band, the output level and the microphone spacing that sets
+the stereo width. Each one is documented with what it was measured at and
+why.
 
 The same seed and options give byte-identical output, which is what makes
 `tests/acoustics.zig` possible; the block size the caller happens to use does
