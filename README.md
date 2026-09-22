@@ -92,7 +92,8 @@ second render averages away.
 Build it with Nix, or with Zig from the devshell:
 
 ```console
-$ nix run github:jcollie/wopr -- --duration 30 --output hum.wav
+$ nix build            # the binary lands at result/bin/wopr
+$ nix run . -- --duration 30 --output hum.wav
 $ nix develop -c zig build -Doptimize=ReleaseFast
 ```
 
