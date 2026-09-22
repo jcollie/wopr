@@ -17,6 +17,30 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    // The same two modules again for the host, for `zig build site`, whose
+    // sampler has to run here rather than on whatever -Dtarget was asked
+    // for. When they are the same target Zig reuses the compilation, so
+    // this costs nothing in the usual case.
+    const host_mod = b.addModule("wopr-host", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = b.graph.host,
+    });
+    const host_wav = b.dependency("wav", .{ .target = b.graph.host, .optimize = .ReleaseFast });
+    const host_play = b.createModule(.{
+        .root_source_file = b.path(if (b.graph.host.result.os.tag == .linux)
+            "src/play.zig"
+        else
+            "src/play_unsupported.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseFast,
+        .imports = &.{.{ .name = "wopr", .module = host_mod }},
+    });
+    if (b.graph.host.result.os.tag == .linux) {
+        if (b.lazyDependency("pipewire", .{ .target = b.graph.host, .optimize = .ReleaseFast })) |dep| {
+            host_play.addImport("pipewire", dep.module("pipewire"));
+        }
+    }
+
     // Playing the hum into PipeWire, which is a Linux daemon reached with
     // Linux syscalls -- so off Linux the stand-in is compiled instead and
     // `--play` becomes a message rather than a build failure. The library
@@ -116,6 +140,53 @@ pub fn build(b: *std.Build) void {
     const docs_step = b.step("docs", "Build the API documentation into zig-out/docs");
     docs_step.dependOn(&install_docs.step);
 
+    // -- the published site ---------------------------------------------------
+    //
+    // What goes to https://jeff.jcollie.page/wopr/ : a page that plays the
+    // hum, with the API documentation under `api/`. The sample is rendered
+    // here rather than committed, so the recording on the page is always
+    // what the commit being documented actually produces -- a synthesiser
+    // whose demo is a stale file is a synthesiser nobody can check.
+    const site_seconds = b.option(f64, "site-seconds", "Length of the sample on the site (default 30)") orelse 30;
+    const site_seed = b.option(u64, "site-seed", "Seed for the sample on the site (default 1983)") orelse 1983;
+
+    // Built for the machine running the build, never for whatever -Dtarget
+    // the rest is being built for: this one has to run.
+    const sampler = b.addExecutable(.{
+        .name = "wopr-sampler",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "wopr", .module = host_mod },
+                .{ .name = "play", .module = host_play },
+                .{ .name = "wav", .module = host_wav.module("wav") },
+            },
+        }),
+    });
+
+    const render_sample = b.addRunArtifact(sampler);
+    render_sample.addArgs(&.{ "--duration", b.fmt("{d}", .{site_seconds}) });
+    // A fixed seed, so that a docs build that changed nothing about the
+    // synthesis produces the identical file and `git-pages-cli` has nothing
+    // to upload. Without it every push would push five megabytes.
+    render_sample.addArgs(&.{ "--seed", b.fmt("{d}", .{site_seed}) });
+    render_sample.addArg("--output");
+    const sample = render_sample.addOutputFileArg("hum.wav");
+
+    const site_step = b.step("site", "Assemble the published site into zig-out/site");
+    site_step.dependOn(&b.addInstallFile(b.path("site/index.html"), "site/index.html").step);
+    site_step.dependOn(&b.addInstallFile(sample, "site/hum.wav").step);
+    site_step.dependOn(&b.addInstallDirectory(.{
+        .source_dir = library.getEmittedDocs(),
+        .install_dir = .prefix,
+        .install_subdir = "site/api",
+    }).step);
+
+    // Nothing else builds the sampler for the host when cross compiling.
+    check_step.dependOn(&sampler.step);
+
     // That viewer fetches `sources.tar` and `main.wasm` at runtime, which a
     // browser refuses to do from a `file://` page, so reading the docs
     // locally means serving them. It is the same reason `zig std` runs a
@@ -143,6 +214,20 @@ pub fn build(b: *std.Build) void {
 
     const docs_serve_step = b.step("docs-serve", "Serve the API documentation over HTTP");
     docs_serve_step.dependOn(&run_docs_server.step);
+
+    // The same server pointed at the whole site rather than just the API
+    // documentation, which is what actually gets published: the page, the
+    // sample it plays, and the documentation under `api/`. Worth having
+    // separately from `docs-serve` because a page is a thing to look at
+    // before it goes up.
+    const run_site_server = b.addRunArtifact(docs_server);
+    run_site_server.step.dependOn(site_step);
+    run_site_server.addArg(b.getInstallPath(.prefix, "site"));
+    run_site_server.addArg(b.fmt("{d}", .{docs_port}));
+    run_site_server.stdio = .inherit;
+
+    const site_serve_step = b.step("site-serve", "Serve the published site over HTTP");
+    site_serve_step.dependOn(&run_site_server.step);
 
     // The server has tests of its own; without this they would never run.
     // And nothing else builds it, so it belongs in `check` or it could stop

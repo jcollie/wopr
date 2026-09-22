@@ -22,9 +22,12 @@ Redirected or piped it writes a WAVE stream instead.
 $ wopr
 ```
 
-API documentation, generated from the doc comments, is published at
-<https://jeff.jcollie.page/wopr/>. The doc comments carry most of the
-explanation of *why* the synthesiser is shaped the way it is, so they are
+**<https://jeff.jcollie.page/wopr/> plays it**, without cloning anything: a
+thirty second sample rendered by whatever commit the page was published
+from, so it is what the code actually produces rather than a file somebody
+uploaded once. The [API documentation](https://jeff.jcollie.page/wopr/api/)
+sits under `api/` there, generated from the doc comments, which carry most
+of the explanation of *why* the synthesiser is shaped the way it is and are
 worth reading before the source.
 
 ## Where this lives
@@ -388,7 +391,8 @@ its own audio and measures that.
 $ nix develop
 $ zig build test --summary all   # unit tests and the acoustic ones
 $ zig build check                # compile what the tests do not
-$ zig build docs-serve           # read the API docs at localhost:8000
+$ zig build site-serve           # the published site at localhost:8000
+$ zig build docs-serve           # just the API docs, same port
 $ zig fmt --check .
 $ reuse lint
 ```

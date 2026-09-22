@@ -46,8 +46,9 @@ jobs:
 
   # Published only from main, so that a branch build cannot replace the site
   # with a work in progress, and only after `test` has passed, so that it
-  # cannot document a tree that does not compile.
-  docs:
+  # cannot document a tree that does not compile -- or publish a sample
+  # rendered by one.
+  site:
     needs: test
     if: ${{ forge.ref == 'refs/heads/main' }}
     runs-on: nixos-do-s
@@ -55,15 +56,20 @@ jobs:
       - name: Check out
         uses: https://code.forgejo.org/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Build API docs
-        run: nix develop -c zig build docs --system "$(nix build --print-out-paths .#zig-deps)"
+      # The page, the sample it plays, and the API documentation under
+      # `api/`. The sample is rendered here by the commit being published,
+      # from a fixed seed, so it comes out byte-identical unless the
+      # synthesis changed -- and the incremental upload below then has
+      # nothing to send rather than five megabytes every push.
+      - name: Build the site
+        run: nix develop -c zig build site --system "$(nix build --print-out-paths .#zig-deps)"
 
-      - name: Publish docs
+      - name: Publish the site
         run: >
           nix develop -c git-pages-cli https://jeff.jcollie.page/wopr/
           --server jcollie.page
           --token ${{ forge.token }}
-          --upload-dir zig-out/docs
+          --upload-dir zig-out/site
 
 # The scripts in `analysis/` are deliberately not run here. They measure the
 # reference recording, which is a clip of a commercial film's soundtrack and

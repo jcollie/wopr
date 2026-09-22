@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<!--
+SPDX-FileCopyrightText: © 2026 Jeffrey C. Ollie <jeff@ocjtech.us>
+SPDX-License-Identifier: MIT
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>wopr</title>
+    <meta
+      name="description"
+      content="A synthesiser for the low machine-room hum of the WOPR computer in WarGames, built from partials measured off a recording of it."
+    />
+    <style>
+      /* One file, no fonts to fetch, no scripts: the page is the player and
+         a paragraph, and it should be on screen before anybody wonders. */
+      :root {
+        color-scheme: light dark;
+        --bg: #faf9f7;
+        --fg: #1b1a18;
+        --dim: #55524d;
+        --rule: #ddd9d3;
+        --accent: #8a3a1e;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #14140f;
+          --fg: #e6e2d8;
+          --dim: #9a958a;
+          --rule: #2e2d26;
+          --accent: #e08a4a;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 3rem 1rem 5rem;
+        background: var(--bg);
+        color: var(--fg);
+        font: 16px/1.65 ui-serif, Georgia, "Times New Roman", serif;
+      }
+      main {
+        max-width: 38rem;
+        margin: 0 auto;
+      }
+      h1 {
+        font: 600 2.6rem/1 ui-monospace, "SFMono-Regular", Menlo, Consolas,
+          monospace;
+        letter-spacing: 0.08em;
+        margin: 0 0 0.35rem;
+      }
+      .lede {
+        color: var(--dim);
+        margin: 0 0 2.5rem;
+        font-size: 1.05rem;
+      }
+      audio {
+        width: 100%;
+        margin: 0 0 0.6rem;
+      }
+      .caption {
+        color: var(--dim);
+        font-size: 0.85rem;
+        margin: 0 0 2.5rem;
+      }
+      h2 {
+        font-size: 1rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--dim);
+        font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+        font-weight: 600;
+        border-top: 1px solid var(--rule);
+        padding-top: 1.5rem;
+        margin: 2.5rem 0 1rem;
+      }
+      p {
+        margin: 0 0 1rem;
+      }
+      code {
+        font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+        font-size: 0.9em;
+        background: color-mix(in srgb, var(--fg) 8%, transparent);
+        padding: 0.1em 0.35em;
+        border-radius: 3px;
+      }
+      pre {
+        background: color-mix(in srgb, var(--fg) 6%, transparent);
+        border-left: 2px solid var(--rule);
+        padding: 0.9rem 1rem;
+        overflow-x: auto;
+        margin: 0 0 1rem;
+      }
+      pre code {
+        background: none;
+        padding: 0;
+      }
+      a {
+        color: var(--accent);
+      }
+      ul {
+        padding-left: 1.2rem;
+        margin: 0 0 1rem;
+      }
+      li {
+        margin-bottom: 0.5rem;
+      }
+      .where {
+        list-style: none;
+        padding: 0;
+        font-size: 0.95rem;
+      }
+      .where li {
+        display: flex;
+        gap: 1rem;
+        margin-bottom: 0.4rem;
+      }
+      .where span {
+        color: var(--dim);
+        font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        min-width: 5.5rem;
+        padding-top: 0.15rem;
+      }
+      footer {
+        border-top: 1px solid var(--rule);
+        margin-top: 3rem;
+        padding-top: 1.5rem;
+        color: var(--dim);
+        font-size: 0.85rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>wopr</h1>
+      <p class="lede">
+        The low humming of the WOPR machine room in <em>WarGames</em> (1983),
+        synthesised rather than sampled.
+      </p>
+
+      <audio controls preload="metadata" src="hum.wav">
+        Your browser will not play this. The file is
+        <a href="hum.wav">hum.wav</a>.
+      </audio>
+      <p class="caption">
+        Thirty seconds, rendered by the same commit these pages document.
+        There is no recording in it and no loop point: it would have kept
+        going.
+      </p>
+
+      <h2>What you are hearing</h2>
+      <p>
+        Fifty-six sine partials between 91 Hz and 290 Hz, at frequencies
+        measured off a recording of the real thing. They are not a harmonic
+        series — there is no fundamental the rest are multiples of — because
+        the sound is a room full of independent motors, transformers and
+        fans rather than one vibrating thing. 98% of the energy is in the
+        80–160 Hz octave.
+      </p>
+      <p>
+        The slow throb is not a tremolo. The strongest partials sit about
+        3.7 Hz apart, so summing them beats at 3.7 Hz on its own; adding a
+        modulator would be doing the same job twice, audibly. Each partial
+        also drifts a fraction of a percent in frequency and a couple of
+        decibels in level, the way an unregulated motor does, which is what
+        keeps the whole thing from settling into a period the ear can find.
+      </p>
+      <p>
+        The ping and the pong are in the recording too. The ping is nearly a
+        pure tone at 1188 Hz; the pong's partials land at 1.56, 1.86, 2.12
+        and 2.66 times its 527 Hz fundamental, which is not a harmonic
+        series and is why it reads as a struck object rather than a beep.
+        Both echo off the room at about 205 ms.
+      </p>
+
+      <h2>Running it</h2>
+      <p>
+        It plays when run from a terminal, as a PipeWire node of its own that
+        a mixer can see and move, and writes a WAVE stream when redirected.
+      </p>
+      <pre><code>$ wopr
+$ wopr --duration 30 --output hum.wav
+$ wopr --bursts off --gain -26</code></pre>
+
+      <h2>Reading it</h2>
+      <p>
+        <a href="api/">API documentation</a>, generated from the doc
+        comments, which carry most of the explanation of why each piece is
+        shaped the way it is.
+      </p>
+      <ul class="where">
+        <li><span>GitHub</span> <a href="https://github.com/jcollie/wopr">github.com/jcollie/wopr</a></li>
+        <li><span>Forgejo</span> <a href="https://git.jcollie.dev/jeff/wopr">git.jcollie.dev/jeff/wopr</a></li>
+        <li><span>Tangled</span> <a href="https://tangled.org/jcollie.dev/wopr">tangled.org/jcollie.dev/wopr</a></li>
+        <li><span>Radicle</span> <code>rad:z2hpahcXcgvnjmbvU2gDmNSJQRWBB</code></li>
+      </ul>
+
+      <footer>
+        MIT. Written in Zig. © 2026 Jeffrey C. Ollie.
+      </footer>
+    </main>
+  </body>
+</html>
