@@ -1,0 +1,10 @@
+version = 1
+SPDX-PackageName = "wopr"
+SPDX-PackageSupplier = "Jeffrey C. Ollie <jeff@ocjtech.us>"
+SPDX-PackageDownloadLocation = "https://git.jcollie.dev/jeff/wopr"
+
+[[annotations]]
+path = ["flake.lock", "build.zig.zon"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© 2026 Jeffrey C. Ollie <jeff@ocjtech.us>"
+SPDX-License-Identifier = "MIT"

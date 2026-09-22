@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: © 2026 Jeffrey C. Ollie <jeff@ocjtech.us>
+# SPDX-License-Identifier: MIT
+
+.zig-cache/
+zig-out/
+
+# The symlink `nix build` leaves behind.
+/result
+
+# The reference recording the partial table was measured from. It is a clip
+# of a commercial film's soundtrack, so it is not redistributed here; the
+# README says where to get it and what to call it, and nothing in the build
+# or the test suite needs it -- only the scripts in `analysis/` do.
+/reference/
