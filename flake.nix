@@ -8,11 +8,18 @@
     nixpkgs = {
       url = "https://channels.nixos.org/nixos-unstable/nixexprs.tar.xz";
     };
+    zon2nix = {
+      url = "github:jcollie/zon2nix";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+      };
+    };
   };
 
   outputs =
     {
       nixpkgs,
+      zon2nix,
       ...
     }:
     let
@@ -33,6 +40,10 @@
         rec {
           wopr = pkgs.callPackage ./package.nix { };
           default = wopr;
+          # The Zig dependencies on their own, so that a workflow job can
+          # run `zig build` for something other than the package -- the
+          # documentation -- without a network.
+          zig-deps = pkgs.callPackage ./build.zig.zon.nix { };
         }
       );
 
@@ -52,6 +63,19 @@
               # anything somebody else wrote is the command line, and that is
               # covered by ordinary tests.
               pkgs.zig_0_16
+
+              # Regenerating `build.zig.zon.nix` shells out to `zig env`, so
+              # the one it finds has to be the one this project builds with
+              # rather than whatever happens to be on PATH.
+              (pkgs.symlinkJoin {
+                name = "zon2nix";
+                paths = [ zon2nix.packages.${pkgs.stdenv.hostPlatform.system}.zon2nix ];
+                nativeBuildInputs = [ pkgs.makeWrapper ];
+                postBuild = ''
+                  wrapProgram $out/bin/zon2nix \
+                    --prefix PATH : ${lib.makeBinPath [ pkgs.zig_0_16 ]}
+                '';
+              })
               pkgs.git-pages-cli
               pkgs.pinact
               pkgs.reuse

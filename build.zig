@@ -17,13 +17,36 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    // Playing the hum into PipeWire, which is a Linux daemon reached with
+    // Linux syscalls -- so off Linux the stand-in is compiled instead and
+    // `--play` becomes a message rather than a build failure. The library
+    // module above deliberately does not depend on any of this: a program
+    // that renders into its own audio callback should not acquire a
+    // PipeWire dependency by linking a hum.
+    const linux = target.result.os.tag == .linux;
+    const play = b.createModule(.{
+        .root_source_file = b.path(if (linux) "src/play.zig" else "src/play_unsupported.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "wopr", .module = mod }},
+    });
+    if (linux) {
+        // Lazy in `build.zig.zon`, so this is also what fetches it.
+        if (b.lazyDependency("pipewire", .{ .target = target, .optimize = optimize })) |dep| {
+            play.addImport("pipewire", dep.module("pipewire"));
+        }
+    }
+
     const exe = b.addExecutable(.{
         .name = "wopr",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "wopr", .module = mod }},
+            .imports = &.{
+                .{ .name = "wopr", .module = mod },
+                .{ .name = "play", .module = play },
+            },
         }),
     });
     b.installArtifact(exe);
@@ -34,7 +57,7 @@ pub fn build(b: *std.Build) void {
     // runner must not be holding either end of that.
     run_cmd.stdio = .inherit;
     if (b.args) |args| run_cmd.addArgs(args);
-    const run_step = b.step("run", "Render the hum to stdout: `zig build run -- --duration 10 -o hum.wav`");
+    const run_step = b.step("run", "Play the hum: `zig build run -- --duration 10`");
     run_step.dependOn(&run_cmd.step);
 
     // A test executable covers one module, so each needs its own. Missing
@@ -59,6 +82,19 @@ pub fn build(b: *std.Build) void {
 
     const check_step = b.step("check", "Compile everything without running it");
     check_step.dependOn(&exe.step);
+
+    // The stand-in is never built by anything above on Linux, which is
+    // where this is developed, so without this it could stop compiling and
+    // only a cross build would find out.
+    const play_stub = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/play_unsupported.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "wopr", .module = mod }},
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(play_stub).step);
 
     // -- documentation -------------------------------------------------------
     //

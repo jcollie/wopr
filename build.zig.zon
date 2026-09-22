@@ -3,7 +3,16 @@
     .version = "0.0.0",
     .fingerprint = 0x513a2c2452fb3de, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0",
-    .dependencies = .{},
+    .dependencies = .{
+        // Lazy, so that a build for anything but Linux does not fetch it.
+        // PipeWire is a Linux daemon and the library speaks to it with Linux
+        // syscalls; `src/play_unsupported.zig` stands in elsewhere.
+        .pipewire = .{
+            .url = "git+https://git.jcollie.dev/jeff/zig-pipewire.git?ref=main#8a19c3ed38863ec8322a41bda1684763024ba2a6",
+            .hash = "pipewire-0.1.0-lH35HnBDBgBw4baPCOGqqR67dG7iS19gQnq52dzoCsGX",
+            .lazy = true,
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",

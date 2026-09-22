@@ -3,25 +3,29 @@
 
 //! `wopr`: write the machine room hum somewhere.
 //!
-//! By default it writes a WAVE stream to stdout and never stops, which is
-//! the shape that pipes into a player:
+//! Run from a terminal it plays, through PipeWire, as a node of its own
+//! that a mixer can see and move. Redirected or piped it writes a WAVE
+//! stream instead, and never stops, which is the shape that goes into
+//! something else:
 //!
 //! ```console
-//! $ wopr | pw-play -
-//! $ wopr --raw | aplay -f S16_LE -r 44100 -c 2
-//! $ wopr --duration 30 --output hum.wav
+//! $ wopr                                          # plays
+//! $ wopr --duration 30 --output hum.wav           # renders
+//! $ wopr --raw | aplay -f S16_LE -r 44100 -c 2    # somebody else plays
 //! ```
 //!
-//! Nothing here paces the output against a clock. A player consumes samples
-//! at the rate it plays them and the pipe fills up behind it, so the
-//! backpressure does the pacing for free; a file or `/dev/null` takes them as
-//! fast as they can be made, which is what you want when rendering.
+//! Nothing here paces the output against a clock, in either mode. A graph
+//! consumes frames at the rate it plays them and the ring fills up behind
+//! it; a pipe does the same thing with a player on the far end. A file or
+//! `/dev/null` takes them as fast as they can be made, which is what you
+//! want when rendering.
 
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const wopr = @import("wopr");
+const play = @import("play");
 
 const version = "0.0.0";
 
@@ -37,11 +41,13 @@ const usage =
     \\Writes an endless WOPR machine room hum, as a WAVE stream on stdout
     \\unless told otherwise.
     \\
-    \\  -o, --output PATH     write here instead of stdout
+    \\  -p, --play            play through PipeWire; the default from a terminal
+    \\      --sink NAME       play to this sink rather than the default one
+    \\  -o, --output PATH     write a file here instead
     \\  -d, --duration SECS   stop after SECS seconds (default: never stop)
     \\  -r, --rate HZ         sample rate (default 44100)
     \\  -c, --channels N      1 or 2 (default 2)
-    \\  -f, --format FMT      s16, s24 or f32 (default s16)
+    \\  -f, --format FMT      s16, s24 or f32 (default s16); written files only
     \\      --raw             headerless PCM rather than a WAVE stream
     \\  -g, --gain DB         output level in dBFS RMS (default -18)
     \\  -w, --width W         stereo spread, 0 to 1 (default 0.6)
@@ -54,9 +60,10 @@ const usage =
     \\  -V, --version         print the version and stop
     \\
     \\examples:
-    \\  wopr | pw-play -
-    \\  wopr --raw | aplay -f S16_LE -r 44100 -c 2
+    \\  wopr
+    \\  wopr --sink alsa_output.usb-audio -g -24
     \\  wopr -d 30 -o hum.wav
+    \\  wopr --raw | aplay -f S16_LE -r 44100 -c 2
     \\
 ;
 
@@ -70,7 +77,7 @@ pub fn main(init: std.process.Init) !void {
     // A mistake on the command line is the user's, not a crash: it goes to
     // stderr and exits 2, rather than being returned so that the runtime
     // prints `error.BadUsage` and a stack trace through the argument parser.
-    const config = parse(args[1..]) catch |err| {
+    var config = parse(args[1..]) catch |err| {
         var w: Io.File.Writer = .init(.stderr(), io, &message_buffer);
         w.interface.print("wopr: {s}\n\n{s}", .{ describe(err), usage }) catch {};
         w.interface.flush() catch {};
@@ -108,7 +115,7 @@ pub fn main(init: std.process.Init) !void {
         break :seed std.hash.Wyhash.hash(0, std.mem.asBytes(&ns));
     };
 
-    var hum: wopr.Hum = wopr.Hum.init(gpa, .{
+    const hum_options: wopr.Hum.Options = .{
         .sample_rate = config.rate,
         .channels = config.channels,
         .seed = seed,
@@ -122,7 +129,35 @@ pub fn main(init: std.process.Init) !void {
         // Left alone unless asked, so that the default rate lives in one
         // place -- `bursts.Timing` -- rather than being restated here.
         .timing = if (config.bursts_per_minute) |n| .{ .per_minute = n } else .{},
-    }) catch |err| switch (err) {
+    };
+
+    // Played unless it was asked to write somewhere, or unless stdout is
+    // going anywhere other than a terminal. A person who types `wopr` wants
+    // to hear it; `wopr > hum.wav` and `wopr | something` still mean what
+    // they always did, and nothing spills binary onto a terminal.
+    const playing = config.play or
+        (config.output == null and (Io.File.stdout().isTty(io) catch false));
+
+    if (playing) {
+        // Out of `main` rather than the parser: PipeWire locates its socket
+        // from PIPEWIRE_RUNTIME_DIR, XDG_RUNTIME_DIR and PIPEWIRE_REMOTE,
+        // the way every other client does.
+        config.environ = init.minimal.environ;
+        if (!play.supported) {
+            try stderr.writeAll(
+                \\wopr: this build cannot play audio -- PipeWire is a Linux daemon and
+                \\      zig-pipewire reaches it with Linux syscalls. Write a file with
+                \\      --output, or pipe the WAVE stream on stdout into a player.
+                \\
+            );
+            try stderr.flush();
+            std.process.exit(2);
+        }
+        try playHum(gpa, stderr, hum_options, config);
+        return;
+    }
+
+    var hum: wopr.Hum = wopr.Hum.init(gpa, hum_options) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         // The partial table is fixed and well inside any sample rate a
         // sound card offers, so this only happens if `--rate` was absurd.
@@ -165,6 +200,42 @@ pub fn main(init: std.process.Init) !void {
     };
 }
 
+/// Open the graph and render into it until told to stop.
+fn playHum(
+    gpa: Allocator,
+    stderr: *Io.Writer,
+    hum_options: wopr.Hum.Options,
+    config: Config,
+) !void {
+    var player: play.Player = play.Player.open(gpa, hum_options, .{
+        .target = config.sink,
+        .environ = config.environ,
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.PartialAboveNyquist => {
+            // The graph chose its own rate, so this is not something the
+            // command line asked for and the message has to say so.
+            try stderr.print("wopr: the graph is running too slowly for the hum\n", .{});
+            try stderr.flush();
+            std.process.exit(1);
+        },
+        else => {
+            try stderr.print("wopr: cannot reach PipeWire: {t}\n", .{err});
+            try stderr.flush();
+            std.process.exit(1);
+        },
+    };
+    defer player.close();
+
+    try stderr.print("wopr: playing at {d} Hz into {d} channel(s); ^C to stop\n", .{
+        player.rate(),
+        player.graphChannels(),
+    });
+    try stderr.flush();
+
+    try player.run(config.duration_seconds);
+}
+
 fn stream(out: *Io.Writer, hum: *wopr.Hum, config: Config, total_frames: ?u64) !void {
     if (!config.raw) try wopr.wav.writeHeader(out, .{
         .sample_rate = config.rate,
@@ -196,6 +267,15 @@ const Config = struct {
     pub const Action = enum { run, help, version };
 
     action: Action = .run,
+    /// Set by `--play` or `--sink`. Kept separate from `output` rather than
+    /// collapsed into one "destination" field, because collapsing it makes
+    /// the check below depend on which flag came last -- and `--play -o x`
+    /// then quietly wrote a file instead of being refused.
+    play: bool = false,
+    sink: ?[]const u8 = null,
+    /// Filled in by `main`, not by the parser: PipeWire finds its socket the
+    /// way every other client does, out of the environment.
+    environ: ?std.process.Environ = null,
     output: ?[]const u8 = null,
     duration_seconds: ?f64 = null,
     rate: u32 = defaults.sample_rate,
@@ -223,6 +303,8 @@ const ParseError = error{
     BadGain,
     BadHiss,
     BadBurstRate,
+    /// `--play` and `--output` in the same command line.
+    PlayAndWrite,
 };
 
 fn describe(err: ParseError) []const u8 {
@@ -239,6 +321,7 @@ fn describe(err: ParseError) []const u8 {
         error.BadGain => "gain must be between -120 and 0 dBFS",
         error.BadHiss => "hiss must be between -120 and 0 dB, or \"off\"",
         error.BadBurstRate => "bursts must be between 0 and 3600 a minute, or \"off\"",
+        error.PlayAndWrite => "--play writes nowhere and --output plays nothing; pick one",
     };
 }
 
@@ -285,6 +368,12 @@ fn parse(args: []const []const u8) ParseError!Config {
         } else if (std.mem.eql(u8, name, "--raw")) {
             if (inline_value != null) return error.UnexpectedArgument;
             config.raw = true;
+        } else if (is(name, "-p", "--play")) {
+            if (inline_value != null) return error.UnexpectedArgument;
+            config.play = true;
+        } else if (std.mem.eql(u8, name, "--sink")) {
+            config.sink = try Value.next(inline_value, args, &i);
+            config.play = true;
         } else if (is(name, "-o", "--output")) {
             config.output = try Value.next(inline_value, args, &i);
         } else if (is(name, "-d", "--duration")) {
@@ -340,6 +429,7 @@ fn parse(args: []const []const u8) ParseError!Config {
             return error.UnknownOption;
         }
     }
+    if (config.play and config.output != null) return error.PlayAndWrite;
     return config;
 }
 
@@ -414,6 +504,23 @@ test "the bursts can be thinned out or switched off" {
 test "a seed may be given in hexadecimal" {
     const config = try parse(&.{ "--seed", "0xdeadbeef" });
     try testing.expectEqual(@as(?u64, 0xdeadbeef), config.seed);
+}
+
+test "playing and writing a file are refused together, in either order" {
+    try testing.expectError(error.PlayAndWrite, parse(&.{ "--play", "-o", "x.wav" }));
+    try testing.expectError(error.PlayAndWrite, parse(&.{ "-o", "x.wav", "--play" }));
+    try testing.expectError(error.PlayAndWrite, parse(&.{ "--sink", "a", "-o", "x.wav" }));
+    try testing.expectError(error.PlayAndWrite, parse(&.{ "-o", "x.wav", "--sink", "a" }));
+}
+
+test "naming a sink is asking to play" {
+    const config = try parse(&.{ "--sink", "alsa_output.usb-audio" });
+    try testing.expect(config.play);
+    try testing.expectEqualStrings("alsa_output.usb-audio", config.sink.?);
+    try testing.expect((try parse(&.{"--play"})).play);
+    try testing.expect((try parse(&.{"-p"})).play);
+    // Neither, and `main` asks the terminal.
+    try testing.expect(!(try parse(&.{})).play);
 }
 
 test "--help and --version stop reading, even mid-line" {

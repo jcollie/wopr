@@ -15,8 +15,11 @@ recording of it measures, each one wandering slightly in frequency and level
 the way an unregulated motor does, with the room's ping and pong over the
 top of it.
 
+Run from a terminal it plays, straight into PipeWire as a node of its own.
+Redirected or piped it writes a WAVE stream instead.
+
 ```console
-$ wopr | pw-play -
+$ wopr
 ```
 
 API documentation, generated from the doc comments, is published at
@@ -215,26 +218,46 @@ $ nix run . -- --duration 30 --output hum.wav
 $ nix develop -c zig build -Doptimize=ReleaseFast
 ```
 
-By default it writes a WAVE stream to stdout and never stops, which is the
-shape that pipes into a player. Nothing paces the output against a clock: a
-player consumes samples at the rate it plays them and the pipe fills up
-behind it, so the backpressure does the pacing for free, while a file takes
-them as fast as they can be made.
+The Zig dependency is vendored for Nix by
+[zon2nix](https://git.jcollie.dev/jeff/zon2nix) into `build.zig.zon.nix`,
+which is committed. Adding, removing or updating one is the whole of
+regenerating it:
 
 ```console
-$ wopr | pw-play -                              # PipeWire
-$ wopr --raw | aplay -f S16_LE -r 44100 -c 2    # ALSA
-$ wopr -d 30 -o hum.wav                         # thirty seconds to a file
-$ wopr -c 1 -f f32 --raw | ...                  # mono float, no header
+$ nix develop -c zon2nix --16 --nix=build.zig.zon.nix build.zig.zon
 ```
+
+Run from a terminal, `wopr` plays. Redirected or piped it writes a WAVE
+stream to stdout instead and never stops, which is the shape that goes into
+something else.
+
+```console
+$ wopr                                          # plays
+$ wopr --sink alsa_output.usb-audio -g -24      # plays somewhere particular
+$ wopr -d 30 -o hum.wav                         # renders thirty seconds
+$ wopr --raw | aplay -f S16_LE -r 44100 -c 2    # somebody else plays
+$ wopr | ffmpeg -i - -c:a flac hum.flac         # somebody else encodes
+```
+
+Deciding by whether stdout is a terminal keeps every pipeline working and
+stops a bare `wopr` from spilling binary across a terminal. `--play` and
+`--output` force it either way, and giving both is refused rather than
+guessed at.
+
+Nothing paces the output against a clock in either mode. The graph consumes
+frames at the rate it plays them and the ring fills up behind it; a pipe does
+the same thing with a player on the far end. A file or `/dev/null` takes them
+as fast as they can be made, which is what you want when rendering.
 
 | option | |
 | --- | --- |
-| `-o, --output PATH` | write here instead of stdout |
+| `-p, --play` | play through PipeWire; the default from a terminal |
+| `--sink NAME` | play to this sink rather than the default one |
+| `-o, --output PATH` | write a file here instead |
 | `-d, --duration SECS` | stop after this long; the default is never |
 | `-r, --rate HZ` | sample rate, 8000 to 768000 (default 44100) |
 | `-c, --channels N` | 1 or 2 (default 2) |
-| `-f, --format FMT` | `s16`, `s24` or `f32` (default `s16`) |
+| `-f, --format FMT` | `s16`, `s24` or `f32` (default `s16`); written files only |
 | `--raw` | headerless PCM rather than a WAVE stream |
 | `-g, --gain DB` | output level in dBFS RMS (default −18) |
 | `-w, --width W` | stereo spread, 0 to 1 (default 0.6) |
@@ -246,6 +269,39 @@ An endless WAVE stream declares its length as `0xFFFFFFFF`, which is the
 convention for one: a player reads until the pipe closes rather than stopping
 at a length that was a guess. Give `--duration` and the header carries the
 real length, because then there is one.
+
+### Playing
+
+Playback goes through [zig-pipewire](https://git.jcollie.dev/jeff/zig-pipewire),
+which speaks PipeWire's wire protocol over the daemon's socket directly — no
+`libpipewire`, no C. `wopr | pw-play -` worked and still does, but it makes
+the hum a file that something else happens to be reading: it shows up in
+`wpctl status` as `pw-play`, the volume belongs to `pw-play`, and the WAVE
+header has to claim a length it does not have. Opening the graph directly
+makes it a node called `wopr`, which a mixer can see, move to another sink
+and turn down like anything else.
+
+```console
+$ wopr &
+$ wpctl status | grep wopr
+  112. wopr
+$ wpctl set-volume 112 0.3
+```
+
+The graph has one sample rate and everything in it lives with that rate, so
+`--rate` is a request. The stream is opened first and the synthesiser built
+afterwards at whatever the graph settled on, which is printed when it starts
+— asking an additive synthesiser for a different rate costs nothing, where
+resampling it would put a resampler in the way. `--sink` is a request too:
+it is written into the session manager's metadata, which may decline it and
+link to the default instead.
+
+PipeWire is a Linux daemon reached with Linux syscalls, so the dependency is
+`lazy` in `build.zig.zon` and is not fetched at all for any other target;
+`src/play_unsupported.zig` is compiled in its place and `--play` becomes a
+message rather than a build failure. The library module deliberately does
+not depend on any of it — a program that renders into its own audio callback
+should not acquire a PipeWire dependency by linking a hum.
 
 Fifty-six oscillators in stereo is about 3.7% of one core at 44.1 kHz in a
 `ReleaseFast` build — twenty-seven times faster than real time — so leaving
@@ -319,6 +375,10 @@ $ zig build docs-serve           # read the API docs at localhost:8000
 $ zig fmt --check .
 $ reuse lint
 ```
+
+`zig build run` plays it, since the build runner inherits the terminal:
+`zig build run -- --duration 10 --bursts off`, and anything else after the
+`--`.
 
 `tests/acoustics.zig` is where a claim about the *sound* gets written down: it
 renders seconds of audio and measures the spectrum, the octave balance, the
